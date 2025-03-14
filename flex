@@ -2569,57 +2569,84 @@ double GetIndicatorValue(string symbol, int period, IndicatorType indicatorType,
 //------------------------------------------------------------------
 // Enhanced Strategy Selection & Optimization based on Market Conditions
 //------------------------------------------------------------------
-TradingStrategy EnhancedStrategySelection() {
-    bool logDebug = ShouldLog(LOG_DEBUG);
-    if (logDebug) {
-        ToggleVerboseLogging(true);
-        Log("Verbose logging enabled.", LOG_DEBUG);
-    }
+TradingStrategy EnhancedStrategySelection(){
+   // Update indicators to ensure current market data is used.
+   UpdateCachedIndicators();
+   
+   // Validate market conditions (e.g., ATR and timeframe)
+   if(!CheckStrategyValidity())   {
+      Log("EnhancedStrategySelection: Market conditions not met.", LOG_ERROR);
+      return INVALID_STRATEGY;
+   }
+   
+   // Use local copies with unique names to avoid hiding global variables
+   double localTrendStrength = cachedTrendStrength; // Global variable cachedTrendStrength remains unchanged
+   double localRSI           = cachedRSI;
+   double localADX           = cachedADX;
+   
+   // Log updated indicator values
+   Log("EnhancedStrategySelection: Updated Indicators - TrendStrength=" + DoubleToString(localTrendStrength,2) +
+       ", RSI=" + DoubleToString(localRSI,2) +
+       ", ADX=" + DoubleToString(localADX,2), LOG_INFO);
+   
+   // Decision logic based on indicator values:
+   // If ADX is high (>=25) and trend strength is strong, select TrendFollowing.
+   // If RSI indicates oversold (<30) or overbought (>70), select MeanReversion.
+   if(localADX >= 25 && localTrendStrength > 50)   {
+      Log("EnhancedStrategySelection: Conditions favor TrendFollowing.", LOG_INFO);
+      return TrendFollowing;
+   }
+   else if(localRSI < 30)   {
+      Log("EnhancedStrategySelection: Conditions favor MeanReversion (Oversold).", LOG_INFO);
+      return MeanReversion;
+   }
+   else if(localRSI > 70)   {
+      Log("EnhancedStrategySelection: Conditions favor MeanReversion (Overbought).", LOG_INFO);
+      return MeanReversion;
+   }
+   else   {
+      Log("EnhancedStrategySelection: Conditions inconclusive; defaulting to TrendFollowing.", LOG_INFO);
+      return TrendFollowing;
+   }
+}
 
-    const string sym = Symbol();
-    // Update indicators immediately before checking conditions
-    UpdateCachedIndicators();
+bool CheckStrategyValidity(){
+   // Define minimum acceptable thresholds
+   double minATRThreshold = 0.0005;   // Adjust this threshold based on your instrument
+   int minTimeframeMinutes = 15;      // Minimum timeframe in minutes
 
-    // Test basic market conditions using dynamic thresholds
-    if (!TestAllConditions(Timeframe, FastMAPeriod, SlowMAPeriod, RSIPeriod, sym)) {
-        Log("Market conditions failed. Using fallback strategy.", LOG_ERROR);
-        HandleMarketConditionsValidationFailure();
-        return GetFallbackStrategy();
-    }
-
-    // Determine candidate strategy using enhanced market condition logic
-    TradingStrategy candidateStrat = DetermineMarketConditions();
-    Log(StringFormat("Candidate strategy determined: %s", StrategyToString(candidateStrat)), LOG_INFO);
-    
-    // Validate the candidate strategy with granular logging
-    if (candidateStrat == INVALID_STRATEGY || !ValidateStrategy(candidateStrat)) {
-        Log("Candidate strategy validation failed.", LOG_WARNING);
-        // Try fallback strategy with additional parameter adjustments
-        TradingStrategy fallbackStrat = GetFallbackStrategy();
-        Log(StringFormat("Fallback strategy suggested: %s", StrategyToString(fallbackStrat)), LOG_INFO);
-        if (ValidateStrategy(fallbackStrat)) {
-            candidateStrat = fallbackStrat;
-        }
-        else {
-            Log("Fallback strategy also invalid. Reverting to default strategy.", LOG_ERROR);
-            candidateStrat = DefaultStrategy();
-        }
-    }
-
-    // Optionally perform optimization if conditions are met
-    if (logDebug && candidateStrat != Hybrid && ShouldOptimize(candidateStrat)) {
-        Log("Optimizing candidate strategy.", LOG_DEBUG);
-        if (!ValidateAndSimulateStrategy(candidateStrat)) {
-            Log("Candidate strategy simulation failed. Using default settings.", LOG_WARNING);
-            candidateStrat = DefaultStrategy();
-        }
-        else {
-            OptimizeAndValidateStrategyParameters(candidateStrat);
-        }
-    }
-
-    Log(StringFormat("Final strategy selected: %s", StrategyToString(candidateStrat)), LOG_INFO);
-    return candidateStrat;
+   // Calculate current ATR value (14-period ATR on current symbol and timeframe)
+   double currentATR = iATR(Symbol(), 0, 14, 0);
+   if(currentATR <= 0)   {
+      Log("CheckStrategyValidity: ATR calculation error.", LOG_ERROR);
+      return LogAndReturnFalseWithContext("Invalid strategy: ATR calculation error.");
+   }
+   if(currentATR < minATRThreshold)   {
+      return LogAndReturnFalseWithContext("Invalid strategy: Insufficient volatility. ATR (" + 
+                                             DoubleToString(currentATR,6) + 
+                                             ") is below threshold (" + DoubleToString(minATRThreshold,6) + ").");
+   }
+   
+   // Convert current timeframe (Period()) to minutes
+   int currentTimeframe = Period();
+   int currentTimeframeMinutes = 0;
+   switch(currentTimeframe)   {
+      case PERIOD_M1:   currentTimeframeMinutes = 1; break;
+      case PERIOD_M5:   currentTimeframeMinutes = 5; break;
+      case PERIOD_M15:  currentTimeframeMinutes = 15; break;
+      case PERIOD_M30:  currentTimeframeMinutes = 30; break;
+      case PERIOD_H1:   currentTimeframeMinutes = 60; break;
+      case PERIOD_H4:   currentTimeframeMinutes = 240; break;
+      case PERIOD_D1:   currentTimeframeMinutes = 1440; break;
+      default:          currentTimeframeMinutes = 1; break;
+   }
+   if(currentTimeframeMinutes < minTimeframeMinutes)   {
+      return LogAndReturnFalseWithContext("Invalid strategy: Timeframe too low (" + IntegerToString(currentTimeframeMinutes) +
+                                             " minutes). Minimum required is " + IntegerToString(minTimeframeMinutes) + " minutes.");
+   }
+   
+   // All checks passed
+   return true;
 }
 
 //------------------------------------------------------------------
@@ -4183,23 +4210,10 @@ bool IsLiquiditySufficient() {
 //------------------------------------------------------------------
 // Log error with context and return false
 //------------------------------------------------------------------
-bool LogAndReturnFalseWithContext(string message, int logLevel = LOG_ERROR) {
-   // Log detailed error if verbose logging is enabled
-   if (isVerboseLoggingEnabled) {
-      string detailedMessage = StringFormat("[%s] Error in function '%s': %s",
-                                              TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES),
-                                              __FUNCTION__, message);
-      Log(detailedMessage, logLevel);
-   }
-
-   // Optional file logging
-   int fileHandle = FileOpen("MQL4\\Logs\\error_log.txt", FILE_WRITE | FILE_TXT);
-   if (fileHandle != INVALID_HANDLE) {
-      FileSeek(fileHandle, 0, SEEK_END);
-      FileWrite(fileHandle, message);
-      FileClose(fileHandle);
-   }
-
+bool LogAndReturnFalseWithContext(string errorMessage){
+   string context = "Symbol: " + Symbol() + ", Timeframe: " + IntegerToString(Period()) +
+                    ", ATR: " + DoubleToString(iATR(Symbol(), 0, 14, 0), 6);
+   Log("Strategy validation failed - " + errorMessage + " | Context: " + context, LOG_ERROR);
    return false;
 }
 
