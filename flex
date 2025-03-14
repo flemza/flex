@@ -93,7 +93,7 @@ double peakEquity = 0;             // Highest equity recorded
 double trendStrength;
 double SL = 50;         // Stop loss in points, now modifiable
 double TP = 100;        // Take profit in points, now modifiable
-double RiskLevel = 0.02; // Risk level per trade, now modifiable
+double TradeRisk = 0.02; // Risk level per trade, now modifiable
 double strategyWinRate[6] = {0.5, 0.5, 0.5, 0.5, 0.5, 0.5};  // Array for win rates of each strategy
 double tradePerformanceBuffer[];  // Define as a dynamic array
 double drawdownThreshold = 0.50;   // Trigger recovery mode if drawdown exceeds 50% (0.50)
@@ -196,7 +196,7 @@ int OnInit(){
     MathSrand((int)TimeLocal());
     
     // Set timer interval for OnTimer events (in seconds)
-    SetTimer(60);
+    EventSetTimer(60);
     
     // Initialize logging
     if (!InitializeLogging("", false, true))    {
@@ -595,7 +595,7 @@ void SetRiskLevel(RiskLevelType riskLevel){
         return;
     }
     
-    double positionSize = CalculatePositionSize(riskLevel, calculatedSL, riskPercentage);
+    double positionSize = CalculatePositionSize(calculatedSL, riskPercentage);
     if (positionSize <= 0)    {
         Log("Error: Invalid position size.", LOG_ERROR);
         return;
@@ -667,7 +667,7 @@ double CalculateTakeProfit(int riskLevel){
          break;
    }
    
-   double stopLoss = CalculateStopLoss(riskLevel);
+   double stopLoss = CalculateStopLoss(RiskMedium);
    double takeProfit = stopLoss * rrRatio;
    takeProfit = MathMin(takeProfit, MAX_TP);
    return takeProfit;
@@ -1264,7 +1264,7 @@ void InitializeTradePerformanceArray() {
       return;
    }
    for (int i = 0; i < desiredSize; i++) {
-      tradePerformance[i].RiskLevel = RiskLevel;
+      tradePerformance[i].RiskLevel = TradeRisk;
       tradePerformance[i].SL = SL;
       tradePerformance[i].TP = TP;
    }
@@ -9981,14 +9981,14 @@ bool OptimizeStrategyParametersUsingML() {
    // Set optimized stop loss and take profit based on volatility.
    SL = MathMax((1.2 + (volatility > 0.02 ? 0.2 : 0)) * volatility, BaseSL);
    TP = MathMax((1.8 + (volatility > 0.02 ? 0.2 : 0)) * volatility, BaseTP);
-   RiskLevel = calculatedRisk;
+   TradeRisk = calculatedRisk;
    
    // Optional logging based on a frequency counter.
    const int OPTIMIZATION_FREQUENCY = 10;
    if (++tradesSinceLastOptimization >= OPTIMIZATION_FREQUENCY) {
       tradesSinceLastOptimization = 0;
       Log(StringFormat("Optimized: SL=%.2f, TP=%.2f, RiskLevel=%.2f%%, Volatility=%.4f, Drawdown=%.2f%%",
-                        SL, TP, RiskLevel * 100, volatility, drawdown * 100), LOG_INFO);
+                        SL, TP, TradeRisk * 100, volatility, drawdown * 100), LOG_INFO);
    }
    
    return true;
