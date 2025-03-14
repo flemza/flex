@@ -189,421 +189,458 @@ IndicatorLogTimes logTimes = {};
 VolatilityState volatilityState = { -1, 0, -1 }; // Initialize with default values
 
 //+------------------------------------------------------------------+
-//| EA Initialization and Setup                                      |
+//| Expert Advisor Initialization                                    |
 //+------------------------------------------------------------------+
-int OnInit() {
-   MathSrand((int)TimeLocal());
-   SetTimers(60);
-   
-   if (!InitializeLogging())
-      AddError("Logging setup failed.");
-      
-   MarketInfoData marketInfo;
-   if (!InitializeMarketInfo(marketInfo))
-      AddError("Market info initialization failed.");
-      
-   if (!ResizeArrays(100))
-      AddError("Array resizing failed.");
-      
-   InitializeTradePerformanceArray();
-   UpdateCachedIndicators();
-   
-   TradingStrategy strat = EnhancedStrategySelection();
-   if (strat == INVALID_STRATEGY) {
-      AddError("Invalid strategy selected. Defaulting to TrendFollowing.");
-      strat = TrendFollowing;
-   }
-   else {
-      Log("Initial strategy selected: " + StrategyToString(strat), LOG_INFO);
-   }
-   
-   if (OptimizeStrategyParameters() != NO_ERROR)
-      AddError("Strategy optimization failed. Using default settings.");
-   else
-      Log("Strategy parameters optimized.", LOG_INFO);
-      
-   Log("EA Initialized successfully.", LOG_INFO);
-   return INIT_SUCCEEDED;
+int OnInit(){
+    // Seed random number generator
+    MathSrand((int)TimeLocal());
+    
+    // Set timer interval for OnTimer events (in seconds)
+    SetTimer(60);
+    
+    // Initialize logging
+    if (!InitializeLogging("", false, true))    {
+        AddError("Logging setup failed.");
+    }
+    
+    // Initialize Market Info
+    MarketInfoData marketInfo;
+    if (!InitializeMarketInfo(marketInfo))    {
+        AddError("Market info initialization failed.");
+    }
+    
+    // Resize dynamic arrays (ensure proper memory allocation)
+    if (!ResizeArrays(100))    {
+        AddError("Array resizing failed.");
+    }
+    
+    // Initialize trade performance tracking
+    InitializeTradePerformanceArray();
+    
+    // Update cached indicator values
+    UpdateCachedIndicators();
+    
+    // Select initial trading strategy
+    TradingStrategy selectedStrategy = EnhancedStrategySelection();
+    if (selectedStrategy == INVALID_STRATEGY)    {
+        AddError("Invalid strategy selected. Defaulting to TrendFollowing.");
+        selectedStrategy = TrendFollowing;
+    }
+    else    {
+        Log("Initial strategy selected: " + StrategyToString(selectedStrategy), LOG_INFO);
+    }
+    
+    // Optimize strategy parameters if possible
+    if (OptimizeStrategyParameters() != NO_ERROR)    {
+        AddError("Strategy optimization failed. Using default settings.");
+    }
+    else    {
+        Log("Strategy parameters optimized.", LOG_INFO);
+    }
+    
+    Log("EA Initialized successfully.", LOG_INFO);
+    return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| Initializes logging                                              |
+//| Initialize logging system                                        |
 //+------------------------------------------------------------------+
-bool InitializeLogging(string customLogFileName = "", bool append = false, bool addTimestamp = true) {
-   #define DEFAULT_LOG_FILE "Flex_EA_log"
-   string fileName = (customLogFileName != "") ? customLogFileName : DEFAULT_LOG_FILE;
-   string timestamp = addTimestamp ? StringFormat("-%04d%02d%02d_%02d%02d",
-                           TimeYear(TimeLocal()), TimeMonth(TimeLocal()),
-                           TimeDay(TimeLocal()), TimeHour(TimeLocal()), TimeMinute(TimeLocal())) : "";
-   string fullLogFileName = fileName + timestamp + ".txt";
-   
-   int fileHandle = FileOpen(fullLogFileName, FILE_WRITE | FILE_TXT | (append ? FILE_READ : 0));
-   if (fileHandle < 0) {
-      Print("Failed to open log file: " + fullLogFileName + ". Error: " + IntegerToString(GetLastError()));
-      return false;
-   }
-   if (append)
-      FileSeek(fileHandle, 0, SEEK_END);
-   else
-      FileWrite(fileHandle, StringFormat("=== Logging Initialized ===\nTimestamp: %s\n", TimeToStr(TimeLocal(), TIME_DATE | TIME_MINUTES)));
-   FileClose(fileHandle);
-   Print("Log file created successfully at: " + fullLogFileName);
-   return true;
+bool InitializeLogging(string customLogFileName = "", bool append = false, bool addTimestamp = true){
+    // Default log file name if not provided
+    string baseFileName = (customLogFileName != "") ? customLogFileName : "Flex_EA_log";
+    string timestamp = "";
+    if (addTimestamp)    {
+        timestamp = StringFormat("-%04d%02d%02d_%02d%02d", TimeYear(TimeLocal()), TimeMonth(TimeLocal()),
+                                 TimeDay(TimeLocal()), TimeHour(TimeLocal()), TimeMinute(TimeLocal()));
+    }
+    string fullLogFileName = baseFileName + timestamp + ".txt";
+    
+    int fileHandle = FileOpen(fullLogFileName, FILE_WRITE | FILE_TXT | (append ? FILE_READ : 0));
+    if (fileHandle < 0)    {
+        Print("Failed to open log file: " + fullLogFileName + ". Error: " + IntegerToString(GetLastError()));
+        return false;
+    }
+    
+    if (append)
+        FileSeek(fileHandle, 0, SEEK_END);
+    else
+        FileWrite(fileHandle, StringFormat("=== Logging Initialized ===\nTimestamp: %s\n", TimeToStr(TimeLocal(), TIME_DATE | TIME_MINUTES)));
+    
+    FileClose(fileHandle);
+    Print("Log file created successfully at: " + fullLogFileName);
+    return true;
 }
 
 //+------------------------------------------------------------------+
 //| Initializes and validates market information                     |
 //+------------------------------------------------------------------+
-bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", int maxRetries = 3, int retryDelay = 500, int maxDelay = 5000, int timeoutSeconds = 10) {
-   if (maxRetries <= 0 || retryDelay <= 0 || maxDelay <= 0 || retryDelay > maxDelay) {
-      Log("Invalid market info parameters.", LOG_ERROR);
-      return false;
-   }
-   
-   string symbolToUse = (StringLen(inputSymbol) == 0) ? Symbol() : inputSymbol;
-   if (!SymbolSelect(symbolToUse, true)) {
-      Log("Invalid symbol: " + symbolToUse, LOG_ERROR);
-      return false;
-   }
-   
-   ResetMarketInfo(marketInfo);
-   marketInfo.symbol = symbolToUse;
-   
-   ulong timeoutEnd = GetTickCount() + timeoutSeconds * 1000;
-   int delay = retryDelay;
-   for (int i = 0; i < maxRetries && GetTickCount() <= timeoutEnd; i++) {
-      if (RetrieveMarketInfo(symbolToUse, marketInfo))
-         break;
-      Log("Retrying market info retrieval. Attempts left: " + IntegerToString(maxRetries - i - 1), LOG_WARNING);
-      Sleep(delay);
-      delay = MathMin(delay * 2, maxDelay);
-   }
-   
-   if (marketInfo.minLotSize <= 0 || marketInfo.maxLotSize <= 0 ||
-       marketInfo.marginRequired <= 0 || marketInfo.lotStep <= 0 ||
-       marketInfo.maxLotSize < marketInfo.minLotSize) {
-      Log("Failed to initialize MarketInfo for " + symbolToUse, LOG_ERROR);
-      return false;
-   }
-   
-   Log(StringFormat("Market Info for %s: MinLot=%.2f, MaxLot=%.2f, Margin=%.2f, LotStep=%.5f",
-         marketInfo.symbol, marketInfo.minLotSize, marketInfo.maxLotSize, marketInfo.marginRequired, marketInfo.lotStep), LOG_INFO);
-   return true;
+bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", int maxRetries = 3, int retryDelay = 500, int maxDelay = 5000, int timeoutSeconds = 10){
+    // Validate parameters
+    if (maxRetries <= 0 || retryDelay <= 0 || maxDelay <= 0 || retryDelay > maxDelay)    {
+        Log("Invalid market info parameters.", LOG_ERROR);
+        return false;
+    }
+    
+    string symbolToUse = (StringLen(inputSymbol) == 0) ? Symbol() : inputSymbol;
+    if (!SymbolSelect(symbolToUse, true))    {
+        Log("Invalid symbol: " + symbolToUse, LOG_ERROR);
+        return false;
+    }
+    
+    ResetMarketInfo(marketInfo);
+    marketInfo.symbol = symbolToUse;
+    
+    ulong timeoutEnd = GetTickCount() + (ulong)timeoutSeconds * 1000;
+    int currentDelay = retryDelay;
+    bool success = false;
+    
+    for (int attempt = 0; attempt < maxRetries && GetTickCount() <= timeoutEnd; attempt++)    {
+        if (RetrieveMarketInfo(symbolToUse, marketInfo))        {
+            success = true;
+            break;
+        }
+        Log("Retrying market info retrieval. Attempts left: " + IntegerToString(maxRetries - attempt - 1), LOG_WARNING);
+        Sleep(currentDelay);
+        currentDelay = MathMin(currentDelay * 2, maxDelay);
+    }
+    
+    if (!success || marketInfo.minLotSize <= 0 || marketInfo.maxLotSize <= 0 || marketInfo.marginRequired <= 0 ||
+        marketInfo.lotStep <= 0 || marketInfo.maxLotSize < marketInfo.minLotSize)    {
+        Log("Failed to initialize MarketInfo for " + symbolToUse, LOG_ERROR);
+        return false;
+    }
+    
+    Log(StringFormat("Market Info for %s: MinLot=%.2f, MaxLot=%.2f, Margin=%.2f, LotStep=%.5f",
+                      marketInfo.symbol, marketInfo.minLotSize, marketInfo.maxLotSize,
+                      marketInfo.marginRequired, marketInfo.lotStep), LOG_INFO);
+    return true;
 }
 
 //+------------------------------------------------------------------+
-//| OnTick Event                                                     |
+//| OnTick Event - main trading logic                                |
 //+------------------------------------------------------------------+
-void OnTick() {
-   static datetime lastExecutionTime = 0;
-   datetime currentTime = TimeCurrent();
-   int minInterval = GetDynamicExecutionInterval();
-   
-   if (currentTime - lastExecutionTime < minInterval) {
-      Log("Execution skipped to avoid overtrading.", LOG_INFO);
-      return;
-   }
-   
-   double equity = AccountEquity();
-   double drawdown = cachedDrawdownPercentage;
-   double sentiment = cachedMarketSentiment;
-   
-   TradingStrategy strategy = SelectBestStrategy();
-   if (strategy == INVALID_STRATEGY) {
-      Log("No valid strategy selected. Aborting execution.", LOG_ERROR);
-      return;
-   }
-   
-   if (!ExecuteStrategy(strategy, equity, drawdown, cachedMarketSentiment)) {
-      int error = GetLastError();
-      if (IsRetryableError(error)) {
-         Log("Retrying execution. Error: " + IntegerToString(error), LOG_WARNING);
-         AdjustRiskParametersForRetry();
-      }
-      else {
-         Log("Aborting execution. Error: " + IntegerToString(error), LOG_ERROR);
-      }
-   }
-   else {
-      lastExecutionTime = currentTime;
-      Log("Strategy executed successfully.", LOG_INFO);
-      UpdateStopLossTakeProfit();
-      UpdateTrailingStop();
-      MoveStopToBreakEven();
-   }
-}
-
-// Main timer function
-void OnTimer() {
-   static datetime lastCheck = 0, lastOptionalTaskRun = 0, lastStrategyOptimizationTime = 0;
-   datetime currentTime = TimeCurrent();
-   const int strategyOptimizationCooldown = 900; // 15 minutes cooldown
-   
-   if (currentTime - lastCheck < performanceCheckInterval)
-      return;
-   lastCheck = currentTime;
-   
-   if (CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage())) {
-      Log("Risk limits breached or recovery mode active. Trading disabled.", LOG_WARNING);
-      return;
-   }
-   
-   if (HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK) {
-      Log("Failed to handle existing orders.", LOG_ERROR);
-      return;
-   }
-   
-   if (ShouldUpdateIndicators(0.0010, 0, false)) {
-      UpdateCachedIndicators();
-   }
-   
-   cachedDrawdownPercentage = CalculateDrawdownPercentage();
-   cachedMarketSentiment = CalculateMarketSentiment();
-   
-   AdjustSLTP();
-   EvaluateStrategyPerformance();
-   ExecuteAllStrategies();
-   
-   if (currentTime - lastStrategyOptimizationTime >= strategyOptimizationCooldown) {
-      Log("Triggering strategy optimization.", LOG_INFO);
-      ResetAndOptimizeStrategy();
-      lastStrategyOptimizationTime = currentTime;
-   }
-   
-   if (ShouldLogPerformanceMetrics(LOG_INFO))
-      LogPerformanceMetrics();
-   
-   if (currentTime - lastOptionalTaskRun >= 3600) {
-      RunOptionalTasks();
-      lastOptionalTaskRun = currentTime;
-   }
-   
-   Log("OnTimer tasks completed successfully.", LOG_INFO);
+void OnTick(){
+    static datetime lastExecutionTime = 0;
+    datetime currentTime = TimeCurrent();
+    int minInterval = GetDynamicExecutionInterval(); // Returns seconds
+    
+    if (currentTime - lastExecutionTime < minInterval)    {
+        Log("Execution skipped to avoid overtrading.", LOG_INFO);
+        return;
+    }
+    
+    double equity = AccountEquity();
+    double drawdown = cachedDrawdownPercentage;
+    double sentiment = cachedMarketSentiment;
+    
+    TradingStrategy strategy = SelectBestStrategy();
+    if (strategy == INVALID_STRATEGY)    {
+        Log("No valid strategy selected. Aborting execution.", LOG_ERROR);
+        return;
+    }
+    
+    // Execute strategy and handle errors
+    if (!ExecuteStrategy(strategy, equity, drawdown, sentiment))    {
+        int error = GetLastError();
+        if (IsRetryableError(error))        {
+            Log("Retryable error occurred during strategy execution. Error: " + IntegerToString(error), LOG_WARNING);
+            AdjustRiskParametersForRetry();
+        }
+        else        {
+            Log("Non-retryable error occurred. Aborting execution. Error: " + IntegerToString(error), LOG_ERROR);
+        }
+    }
+    else    {
+        lastExecutionTime = currentTime;
+        Log("Strategy executed successfully.", LOG_INFO);
+        UpdateStopLossTakeProfit();
+        UpdateTrailingStop();
+        MoveStopToBreakEven();
+    }
 }
 
 //+------------------------------------------------------------------+
-//| Update Stop Loss and Take Profit for Orders                      |
+//| Timer Event - periodic tasks for risk management and updates     |
 //+------------------------------------------------------------------+
-void UpdateStopLossTakeProfit() {
-   RiskLevelType riskLevel = RiskMedium;
-   double sl = CalculateStopLoss(riskLevel);
-   double tp = CalculateTakeProfit(riskLevel);
-   
-   if (sl < 0 || tp < 0) {
-      Log("Invalid SL/TP values calculated.", LOG_ERROR);
-      return;
-   }
-   
-   if (SetStopLossTakeProfit(sl, tp))
-      Log("SL/TP updated: SL=" + DoubleToString(sl, 2) + ", TP=" + DoubleToString(tp, 2), LOG_INFO);
-   else
-      Log("Failed to update SL/TP.", LOG_WARNING);
+void OnTimer(){
+    static datetime lastCheck = 0;
+    static datetime lastOptionalTaskRun = 0;
+    static datetime lastStrategyOptimizationTime = 0;
+    datetime currentTime = TimeCurrent();
+    const int strategyOptimizationCooldown = 900; // 15 minutes cooldown
+    
+    if (currentTime - lastCheck < performanceCheckInterval)
+        return;
+    lastCheck = currentTime;
+    
+    // Check for recovery mode or risk limit breach
+    if (CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage()))    {
+        Log("Risk limits breached or recovery mode active. Trading disabled.", LOG_WARNING);
+        return;
+    }
+    
+    // Manage existing orders
+    if (HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK)    {
+        Log("Failed to handle existing orders.", LOG_ERROR);
+        return;
+    }
+    
+    // Update indicators if necessary
+    if (ShouldUpdateIndicators(0.0010, 0, false))    {
+        UpdateCachedIndicators();
+    }
+    
+    // Update risk parameters
+    cachedDrawdownPercentage = CalculateDrawdownPercentage();
+    cachedMarketSentiment = CalculateMarketSentiment();
+    AdjustSLTP();
+    EvaluateStrategyPerformance();
+    ExecuteAllStrategies();
+    
+    // Optimize strategy parameters periodically
+    if (currentTime - lastStrategyOptimizationTime >= strategyOptimizationCooldown)    {
+        Log("Triggering strategy optimization.", LOG_INFO);
+        ResetAndOptimizeStrategy();
+        lastStrategyOptimizationTime = currentTime;
+    }
+    
+    if (ShouldLogPerformanceMetrics(LOG_INFO))    {
+        LogPerformanceMetrics();
+    }
+    
+    // Run optional tasks hourly
+    if (currentTime - lastOptionalTaskRun >= 3600)    {
+        RunOptionalTasks();
+        lastOptionalTaskRun = currentTime;
+    }
+    
+    Log("OnTimer tasks completed successfully.", LOG_INFO);
 }
 
-// Update trailing stops for open orders
-void UpdateTrailingStop() {
-   string sym = Symbol();
-   int totalOrders = OrdersTotal();
-   double tickSize = MarketInfo(sym, MODE_TICKSIZE);
-   double trailingStart = 20 * tickSize;
-   double trailingStep = 5 * tickSize;
-   
-   for (int i = 0; i < totalOrders; i++) {
-      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) {
-         if (OrderSymbol() != sym)
-            continue;
-         int orderType = OrderType();
-         double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
-         double openPrice = OrderOpenPrice();
-         double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
-         
-         if (profitPips >= (trailingStart / tickSize)) {
-            double newSL = (orderType == OP_BUY) ? currentPrice - trailingStep : currentPrice + trailingStep;
-            if ((orderType == OP_BUY && newSL > OrderStopLoss()) ||
-                (orderType == OP_SELL && newSL < OrderStopLoss())) {
-               if (OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrYellow))
-                  Log("Trailing stop updated for order #" + IntegerToString(OrderTicket()), LOG_INFO);
-               else
-                  Log("Failed to update trailing stop for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
+//+------------------------------------------------------------------+
+//| Update Stop Loss and Take Profit for all open orders             |
+//+------------------------------------------------------------------+
+void UpdateStopLossTakeProfit(){
+    RiskLevelType riskLevel = RiskMedium;
+    double sl = CalculateStopLoss(riskLevel);
+    double tp = CalculateTakeProfit(riskLevel);
+    
+    if (sl < 0 || tp < 0)    {
+        Log("Invalid SL/TP values calculated.", LOG_ERROR);
+        return;
+    }
+    
+    if (SetStopLossTakeProfit(sl, tp))
+        Log("SL/TP updated: SL=" + DoubleToString(sl, 2) + ", TP=" + DoubleToString(tp, 2), LOG_INFO);
+    else
+        Log("Failed to update SL/TP.", LOG_WARNING);
+}
+
+//+------------------------------------------------------------------+
+//| Update trailing stops for open orders                            |
+//+------------------------------------------------------------------+
+void UpdateTrailingStop(){
+    string sym = Symbol();
+    int totalOrders = OrdersTotal();
+    double tickSize = MarketInfo(sym, MODE_TICKSIZE);
+    double trailingStart = 20 * tickSize;
+    double trailingStep = 5 * tickSize;
+    
+    for (int i = 0; i < totalOrders; i++)    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))        {
+            if (OrderSymbol() != sym)
+                continue;
+            
+            int orderType = OrderType();
+            double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
+            double openPrice = OrderOpenPrice();
+            double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
+            
+            if (profitPips >= (trailingStart / tickSize))            {
+                double newSL = (orderType == OP_BUY) ? currentPrice - trailingStep : currentPrice + trailingStep;
+                // Update only if the new stop loss is more favorable
+                if ((orderType == OP_BUY && newSL > OrderStopLoss()) || (orderType == OP_SELL && newSL < OrderStopLoss()))                {
+                    if (OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrYellow))
+                        Log("Trailing stop updated for order #" + IntegerToString(OrderTicket()), LOG_INFO);
+                    else
+                        Log("Failed to update trailing stop for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
+                }
             }
-         }
-      }
-   }
-}
-
-// Move stop loss to break-even if the trade is in sufficient profit
-void MoveStopToBreakEven() {
-   string sym = Symbol();
-   int totalOrders = OrdersTotal();
-   double tickSize = MarketInfo(sym, MODE_TICKSIZE);
-   double breakEvenThreshold = 30 * tickSize;
-   
-   for (int i = 0; i < totalOrders; i++) {
-      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) {
-         if (OrderSymbol() != sym)
-            continue;
-         int orderType = OrderType();
-         double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
-         double openPrice = OrderOpenPrice();
-         double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
-         
-         if (profitPips >= (breakEvenThreshold / tickSize)) {
-            if (OrderModify(OrderTicket(), OrderOpenPrice(), openPrice, OrderTakeProfit(), 0, clrGreen))
-               Log("Stop loss moved to break-even for order #" + IntegerToString(OrderTicket()), LOG_INFO);
-            else
-               Log("Failed to move stop loss to break-even for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
-         }
-      }
-   }
+        }
+    }
 }
 
 //+------------------------------------------------------------------+
-//| Check if an Error is Retryable                                   |
+//| Move stop loss to break-even if trade is in sufficient profit      |
 //+------------------------------------------------------------------+
-bool IsRetryableError(int errorCode) {
-   if (errorCode == EMPTY_VALUE || errorCode < 0) {
-      Print("Invalid error code: " + IntegerToString(errorCode) + " for symbol " + Symbol() + " at " + TimeToString(TimeCurrent()));
-      return false;
-   }
-   return (errorCode == ERR_NOT_ENOUGH_MONEY || errorCode == ERR_TRADE_CONTEXT_BUSY);
-}
-
-//------------------------------------------------------------------
-// Helper: Determine if sentiment update is required
-//------------------------------------------------------------------
-bool ShouldUpdateSentiment(double marketSentiment, double currentTime, double sentimentChangeThreshold = 0.1, double sentimentUpdateInterval = 60) {
-   static double lastMarketSentiment = 0;
-   static datetime lastSentimentUpdateTime = 0;
-   
-   if (currentTime <= 0 || currentTime > (TimeCurrent() + 10))
-      return false;
-   if (MathAbs(marketSentiment - lastMarketSentiment) > sentimentChangeThreshold || currentTime - lastSentimentUpdateTime > sentimentUpdateInterval) {
-      lastMarketSentiment = marketSentiment;
-      lastSentimentUpdateTime = currentTime;
-      return true;
-   }
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| Get Dynamic Execution Interval based on Market Volatility        |
-//+------------------------------------------------------------------+
-int GetDynamicExecutionInterval(double threshold = 0.5, double highInterval = 120, double lowInterval = 60) {
-   double vol = MarketVolatility();
-   if (vol <= 0) {
-      Print("ERROR: Invalid volatility. Using default interval: " + IntegerToString(lowInterval));
-      return lowInterval;
-   }
-   return (vol > threshold) ? highInterval : lowInterval;
+void MoveStopToBreakEven(){
+    string sym = Symbol();
+    int totalOrders = OrdersTotal();
+    double tickSize = MarketInfo(sym, MODE_TICKSIZE);
+    double breakEvenThreshold = 30 * tickSize;
+    
+    for (int i = 0; i < totalOrders; i++)    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))        {
+            if (OrderSymbol() != sym)
+                continue;
+            
+            int orderType = OrderType();
+            double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
+            double openPrice = OrderOpenPrice();
+            double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
+            
+            if (profitPips >= (breakEvenThreshold / tickSize))            {
+                if (OrderModify(OrderTicket(), OrderOpenPrice(), openPrice, OrderTakeProfit(), 0, clrGreen))
+                    Log("Stop loss moved to break-even for order #" + IntegerToString(OrderTicket()), LOG_INFO);
+                else
+                    Log("Failed to move stop loss to break-even for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
+            }
+        }
+    }
 }
 
 //+------------------------------------------------------------------+
-//| Adjust Risk Parameters for Retry                                 |
+//| Check if an error code is considered retryable                   |
 //+------------------------------------------------------------------+
-void AdjustRiskParametersForRetry(int maxDrawdown = 10) {
-   if (maxDrawdown < 0) {
-      Log("maxDrawdown cannot be negative.", LOG_ERROR);
-      return;
-   }
-   
-   static double lastBalance = AccountBalance();
-   double currentBalance = AccountBalance();
-   if (MathAbs(currentBalance - lastBalance) > 100)
-      peakEquity = currentBalance;
-   lastBalance = currentBalance;
-   
-   double currentDrawdown = peakEquity - currentBalance;
-   double recentWinRate = tradePerformance[(int)currentStrategy].winRate;
-   
-   RiskLevelType newRisk;
-   if (currentDrawdown >= maxDrawdown || recentWinRate < 0.4)
-      newRisk = RiskLow;
-   else if (currentDrawdown >= maxDrawdown * 0.5 || recentWinRate < 0.6)
-      newRisk = RiskMedium;
-   else
-      newRisk = RiskHigh;
-   
-   SetRiskLevel(newRisk);
-   Log("Adjusted Risk Parameters: New risk level: " + EnumToString(newRisk) +
-       ", Drawdown: " + DoubleToString(currentDrawdown, 2) +
-       ", Recent Win Rate: " + DoubleToString(recentWinRate * 100, 2) +
-       ", Equity: " + DoubleToString(currentBalance, 2) +
-       ", Peak Equity: " + DoubleToString(peakEquity, 2), LOG_INFO);
+bool IsRetryableError(int errorCode){
+    // Consider non-negative and specific trade context errors as retryable
+    if (errorCode < 0)    {
+        Print("Invalid error code: " + IntegerToString(errorCode) + " for symbol " + Symbol() + " at " + TimeToString(TimeCurrent()));
+        return false;
+    }
+    return (errorCode == ERR_NOT_ENOUGH_MONEY || errorCode == ERR_TRADE_CONTEXT_BUSY);
 }
 
 //+------------------------------------------------------------------+
-//| Set the risk level and adjust position size, SL, and TP          |
+//| Determine if sentiment update is required                        |
 //+------------------------------------------------------------------+
-void SetRiskLevel(RiskLevelType riskLevel) {
-   if (riskLevel < RiskLow || riskLevel > RiskHigh) {
-      Log("Error: Invalid risk level.", LOG_ERROR);
-      return;
-   }
-   
-   const double riskPercentage = 0.02;
-   double calculatedSL = CalculateStopLoss(riskLevel);
-   if (calculatedSL < 0) {
-      Log("Error: Calculated stop loss is invalid.", LOG_ERROR);
-      return;
-   }
-   
-   double positionSize = CalculatePositionSize(riskLevel, calculatedSL);
-   if (positionSize <= 0) {
-      Log("Error: Invalid position size.", LOG_ERROR);
-      return;
-   }
-   
-   SetPositionSize(positionSize);
-   
-   const double MinStopLossDistance = 50;
-   const double MinTakeProfitDistance = 100;
-   
-   double calculatedTP = CalculateTakeProfit(riskLevel);
-   double finalSL = MathMax(calculatedSL, MinStopLossDistance);
-   double finalTP = MathMax(calculatedTP, MinTakeProfitDistance);
-   
-   Log("Risk level: " + EnumToString(riskLevel) + ", Position size: " + DoubleToString(positionSize, 2), LOG_INFO);
-   if (calculatedSL < MinStopLossDistance || calculatedTP < MinTakeProfitDistance)
-      Log("Stop loss/take profit adjusted.", LOG_WARNING);
-   
-   SetStopLossTakeProfit(finalSL, finalTP);
+bool ShouldUpdateSentiment(double marketSentiment, datetime currentTime, double sentimentChangeThreshold = 0.1, int sentimentUpdateInterval = 60){
+    static double lastMarketSentiment = 0.0;
+    static datetime lastSentimentUpdateTime = 0;
+    
+    if (currentTime <= 0 || currentTime > (TimeCurrent() + 10))
+        return false;
+    
+    if (MathAbs(marketSentiment - lastMarketSentiment) > sentimentChangeThreshold ||
+        (currentTime - lastSentimentUpdateTime) > sentimentUpdateInterval)    {
+        lastMarketSentiment = marketSentiment;
+        lastSentimentUpdateTime = currentTime;
+        return true;
+    }
+    return false;
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Stop Loss based on ATR, dynamically adjusting the multiplier                  |
+//| Get dynamic execution interval based on market volatility        |
 //+------------------------------------------------------------------+
-double CalculateStopLoss(int riskLevel){
-   // Validate riskLevel input
-   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
-      Log("CalculateStopLoss: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-      return MAX_SL; // Default maximum stop loss
-   }
-   
-   // Calculate ATR-based stop loss
-   double atrValue = iATR(NULL, 0, 14, 0);
-   if(atrValue <= 0)   {
-      Log("CalculateStopLoss: Invalid ATR value: " + DoubleToString(atrValue,2), LOG_WARNING);
-      atrValue = FALLBACK_ATR;
-   }
-   
-   // Determine stop loss multiplier based on risk level
-   double slMultiplier = 1.0;
-   switch(riskLevel)   {
-      case RiskLow:
-         slMultiplier = 1.5;
-         break;
-      case RiskMedium:
-         slMultiplier = 1.0;
-         break;
-      case RiskHigh:
-         slMultiplier = 0.5;
-         break;
-   }
-   
-   double stopLoss = atrValue * slMultiplier;
-   // Ensure stop loss does not exceed maximum allowed value
-   stopLoss = MathMin(stopLoss, MAX_SL);
-   return stopLoss;
+int GetDynamicExecutionInterval(double threshold = 0.5, int highInterval = 120, int lowInterval = 60){
+    double vol = MarketVolatility();
+    if (vol <= 0)    {
+        Print("ERROR: Invalid volatility value. Using default interval: " + IntegerToString(lowInterval));
+        return lowInterval;
+    }
+    return (vol > threshold) ? highInterval : lowInterval;
+}
+
+//+------------------------------------------------------------------+
+//| Adjust risk parameters for retry based on drawdown and win rate    |
+//+------------------------------------------------------------------+
+void AdjustRiskParametersForRetry(int maxDrawdown = 10){
+    if (maxDrawdown < 0)    {
+        Log("maxDrawdown cannot be negative.", LOG_ERROR);
+        return;
+    }
+    
+    static double lastBalance = AccountBalance();
+    double currentBalance = AccountBalance();
+    
+    // Update peak equity if balance increased significantly
+    if (MathAbs(currentBalance - lastBalance) > 100)
+        peakEquity = currentBalance;
+    
+    lastBalance = currentBalance;
+    
+    double currentDrawdown = peakEquity - currentBalance;
+    double recentWinRate = tradePerformance[(int)currentStrategy].winRate; // Ensure index is valid
+    
+    RiskLevelType newRisk;
+    if (currentDrawdown >= maxDrawdown || recentWinRate < 0.4)
+        newRisk = RiskLow;
+    else if (currentDrawdown >= maxDrawdown * 0.5 || recentWinRate < 0.6)
+        newRisk = RiskMedium;
+    else
+        newRisk = RiskHigh;
+    
+    SetRiskLevel(newRisk);
+    Log("Adjusted Risk Parameters: New risk level: " + EnumToString(newRisk) +
+        ", Drawdown: " + DoubleToString(currentDrawdown, 2) +
+        ", Recent Win Rate: " + DoubleToString(recentWinRate * 100, 2) +
+        ", Equity: " + DoubleToString(currentBalance, 2) +
+        ", Peak Equity: " + DoubleToString(peakEquity, 2), LOG_INFO);
+}
+
+//+------------------------------------------------------------------+
+//| Set the risk level and adjust trading parameters                 |
+//+------------------------------------------------------------------+
+void SetRiskLevel(RiskLevelType riskLevel){
+    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
+        Log("Error: Invalid risk level.", LOG_ERROR);
+        return;
+    }
+    
+    const double riskPercentage = 0.02; // Could be parameterized
+    double calculatedSL = CalculateStopLoss(riskLevel);
+    if (calculatedSL < 0)    {
+        Log("Error: Calculated stop loss is invalid.", LOG_ERROR);
+        return;
+    }
+    
+    double positionSize = CalculatePositionSize(riskLevel, calculatedSL, riskPercentage);
+    if (positionSize <= 0)    {
+        Log("Error: Invalid position size.", LOG_ERROR);
+        return;
+    }
+    
+    SetPositionSize(positionSize);
+    
+    const double MinStopLossDistance = 50;
+    const double MinTakeProfitDistance = 100;
+    double calculatedTP = CalculateTakeProfit(riskLevel);
+    
+    double finalSL = (calculatedSL < MinStopLossDistance) ? MinStopLossDistance : calculatedSL;
+    double finalTP = (calculatedTP < MinTakeProfitDistance) ? MinTakeProfitDistance : calculatedTP;
+    
+    Log("Risk level set to: " + EnumToString(riskLevel) + ", Position size: " + DoubleToString(positionSize, 2), LOG_INFO);
+    
+    if (calculatedSL < MinStopLossDistance || calculatedTP < MinTakeProfitDistance)
+        Log("Stop loss/take profit adjusted to minimum thresholds.", LOG_WARNING);
+    
+    SetStopLossTakeProfit(finalSL, finalTP);
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Stop Loss based on ATR and risk level                  |
+//+------------------------------------------------------------------+
+double CalculateStopLoss(RiskLevelType riskLevel){
+    double atr = cachedATR;
+    if (atr <= 0)    {
+        Log("Error: Invalid ATR value: " + DoubleToString(atr, 6), LOG_ERROR);
+        return -1;
+    }
+    
+    double dynamicFactor = atr / FALLBACK_ATR;
+    double multiplier = 2.0 * dynamicFactor; // Default multiplier
+    
+    if (riskLevel == RiskLow)
+        multiplier = 1.5 * dynamicFactor;
+    else if (riskLevel == RiskMedium)
+        multiplier = 2.0 * dynamicFactor;
+    else if (riskLevel == RiskHigh)
+        multiplier = 3.0 * dynamicFactor;
+    
+    double stopLoss = atr * multiplier;
+    Log("Calculated dynamic Stop Loss for " + EnumToString(riskLevel) + ": " + DoubleToString(stopLoss, 4), LOG_INFO);
+    return stopLoss;
 }
 
 //+------------------------------------------------------------------+
