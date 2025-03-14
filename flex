@@ -547,7 +547,7 @@ void SetRiskLevel(RiskLevelType riskLevel) {
       return;
    }
    
-   double positionSize = CalculatePositionSize(riskLevel, calculatedSL, riskPercentage);
+   double positionSize = CalculatePositionSize(riskLevel, calculatedSL);
    if (positionSize <= 0) {
       Log("Error: Invalid position size.", LOG_ERROR);
       return;
@@ -572,43 +572,67 @@ void SetRiskLevel(RiskLevelType riskLevel) {
 //+------------------------------------------------------------------+
 //| Calculate Stop Loss based on ATR, dynamically adjusting the multiplier                  |
 //+------------------------------------------------------------------+
-double CalculateStopLoss(RiskLevelType riskLevel) {
-   double atr = cachedATR;
-   if (atr <= 0) {
-      Log("Error: Invalid ATR value: " + DoubleToString(atr, 6), LOG_ERROR);
-      return -1;
-   }
-   double dynamicFactor = atr / FALLBACK_ATR;
-   double multiplier = (riskLevel == RiskLow) ? 1.5 * dynamicFactor :
-                       (riskLevel == RiskMedium) ? 2.0 * dynamicFactor :
-                       (riskLevel == RiskHigh) ? 3.0 * dynamicFactor : 2.0 * dynamicFactor;
-   double stopLoss = atr * multiplier;
-   Log("Calculated dynamic Stop Loss for " + EnumToString(riskLevel) + ": " + DoubleToString(stopLoss, 4), LOG_INFO);
-   return stopLoss;
+double CalculateStopLoss(int riskLevel){
+    // Validate riskLevel input
+    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
+        Log("Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+        return MAX_SL; // Return a default maximum SL
+    }
+
+    // Calculate ATR-based stop loss
+    double atrValue = iATR(NULL, 0, 14, 0); // 14-period ATR
+    if (atrValue <= 0)    {
+        Log("Invalid ATR value: " + DoubleToString(atrValue, 2), LOG_WARNING);
+        atrValue = FALLBACK_ATR; // Use fallback value
+    }
+
+    // Determine stop loss multiplier based on risk level
+    double slMultiplier = 1.0;
+    switch (riskLevel)    {
+        case RiskLow:
+            slMultiplier = 1.5;
+            break;
+        case RiskMedium:
+            slMultiplier = 1.0;
+            break;
+        case RiskHigh:
+            slMultiplier = 0.5;
+            break;
+    }
+
+    double stopLoss = atrValue * slMultiplier;
+    stopLoss = MathMin(stopLoss, MAX_SL); // Ensure SL does not exceed MAX_SL
+    return stopLoss;
 }
 
 //+------------------------------------------------------------------+
 //| Calculate Take Profit based on ATR, with dynamic adjustments     |
 //+------------------------------------------------------------------+
-double CalculateTakeProfit(RiskLevelType riskLevel) {
-   double atr = cachedATR;
-   string sym = Symbol();
-   double minATR = MarketInfo(sym, MODE_POINT) * 10.0;
-   if (atr < minATR) {
-      Log("Warning: Low ATR value: " + DoubleToString(atr, 6), LOG_WARNING);
-      return -3;
-   }
-   
-   static const double baseMultipliers[3] = {2.0, 3.0, 5.0};
-   int adjustedIndex = ((int)riskLevel) - 1;
-   if (adjustedIndex < 0 || adjustedIndex > 2) {
-      Log("Error: Invalid risk level: " + EnumToString(riskLevel), LOG_ERROR);
-      return -2;
-   }
-   double dynamicFactor = atr / FALLBACK_ATR;
-   double takeProfit = atr * baseMultipliers[adjustedIndex] * dynamicFactor;
-   Log("Calculated dynamic Take Profit for " + EnumToString(riskLevel) + ": " + DoubleToString(takeProfit, 4), LOG_INFO);
-   return takeProfit;
+double CalculateTakeProfit(int riskLevel){
+    // Validate riskLevel input
+    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
+        Log("Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+        return MAX_TP; // Return a default maximum TP
+    }
+
+    // Define risk-to-reward ratios based on risk level
+    double rrRatio = 2.0; // Default risk-to-reward ratio
+    switch (riskLevel)    {
+        case RiskLow:
+            rrRatio = 1.5;
+            break;
+        case RiskMedium:
+            rrRatio = 2.0;
+            break;
+        case RiskHigh:
+            rrRatio = 2.5;
+            break;
+    }
+
+    double stopLoss = CalculateStopLoss(riskLevel);
+    double takeProfit = stopLoss * rrRatio;
+    takeProfit = MathMin(takeProfit, MAX_TP); // Ensure TP does not exceed MAX_TP
+    return takeProfit;
 }
 
 //+------------------------------------------------------------------+
@@ -679,29 +703,36 @@ bool SetStopLossTakeProfit(double stopLoss, double takeProfit) {
 //+------------------------------------------------------------------+
 //| Calculate position size using risk percentage, dynamic volatility adjustment, and margin requirements        |
 //+------------------------------------------------------------------+
-double CalculatePositionSize(RiskLevelType riskLevel, double stopLossInPips, double riskPercentage = 0.02) {
-   if (stopLossInPips <= 0) {
-      Print("Error: Invalid stop loss distance.");
-      return 0;
-   }
-   
-   double equity = AccountEquity();
-   double riskAmount = equity * riskPercentage;
-   double baseRiskMultiplier = (riskLevel == RiskLow) ? 1000.0 :
-                               (riskLevel == RiskMedium) ? 500.0 :
-                               (riskLevel == RiskHigh) ? 200.0 : 500.0;
-   double currentATR = cachedATR;
-   if (currentATR <= 0)
-      currentATR = FALLBACK_ATR;
-   double volatilityAdjustment = FALLBACK_ATR / currentATR;
-   baseRiskMultiplier *= volatilityAdjustment;
-   
-   double pipValue = MarketInfo(Symbol(), MODE_POINT);
-   double posSize = riskAmount / (stopLossInPips * pipValue * baseRiskMultiplier);
-   double minLot = MarketInfo(Symbol(), MODE_MINLOT);
-   double calculatedSize = MathMax(posSize, minLot);
-   Log("Calculated position size: " + DoubleToString(calculatedSize, 2), LOG_INFO);
-   return calculatedSize;
+double CalculatePositionSize(int riskLevel, double stopLoss){
+    // Validate inputs
+    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
+        Log("Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+        return 0.0;
+    }
+    if (stopLoss <= 0)    {
+        Log("Invalid stop loss value: " + DoubleToString(stopLoss, 2), LOG_ERROR);
+        return 0.0;
+    }
+
+    // Determine risk percentage based on risk level
+    double riskPercentage = DEFAULT_RISK_LEVEL;
+    switch (riskLevel)    {
+        case RiskLow:
+            riskPercentage = 0.01; // 1%
+            break;
+        case RiskMedium:
+            riskPercentage = 0.02; // 2%
+            break;
+        case RiskHigh:
+            riskPercentage = 0.03; // 3%
+            break;
+    }
+
+    double riskAmount = AccountEquity() * riskPercentage;
+    double lotSize = riskAmount / (stopLoss * Point);
+    lotSize = NormalizeDouble(lotSize, 2); // Adjust lot size precision
+    lotSize = MathMin(lotSize, MaxAllowedLotSize); // Ensure lot size does not exceed max allowed
+    return lotSize;
 }
 
 //+------------------------------------------------------------------+
@@ -5012,73 +5043,72 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 //------------------------------------------------------------------
 // Execute Trading Strategy with calculated parameters.
 //------------------------------------------------------------------
-bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdownPct, double sentiment) {
-   // Log execution attempt with key parameters.
-   if(DEBUG_MODE) {
-      Log(StringFormat("Executing strategy: %s, Equity: %.2f, Drawdown: %.2f%%, Sentiment: %.2f", 
-                        StrategyToString(strategy), equity, drawdownPct, sentiment), LOG_INFO);
-   }
-   
-   // Check if trading conditions allow execution.
-   if(!CanTrade()) {
-      SetCustomError(1001);
+bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment){
+   // Validate input values
+   if(equity <= 0 || drawdown < 0)   {
+      Log("Invalid equity or drawdown values.", LOG_ERROR);
       return false;
    }
    
-   string sym = Symbol();
-   double point = MarketInfo(sym, MODE_POINT);
-   double spread = MarketInfo(sym, MODE_SPREAD) * point;
-   // Use a fallback ATR if cached ATR is invalid.
-   double atr = (IsValidIndicatorValue(cachedATR) == VALID) ? cachedATR : FALLBACK_ATR;
-   // Clamp sentiment between -1 and +1.
-   sentiment = MathMax(-1.0, MathMin(1.0, sentiment));
+   double lotSize = 0.0;
+   double sl = 0.0;
+   double tp = 0.0;
    
-   // Calculate dynamic stop loss and take profit (in pips).
-   // Ensure SL is sufficiently wider than the spread.
-   double slPoints = MathMax(atr * (1.2 + sentiment * 0.3), spread * 1.5);
-   double tpPoints = MathMax(atr * (1.8 + sentiment * 0.5), slPoints * 1.5);
-   
-   // Determine risk level and calculate position size.
-   RiskLevelType riskAdjusted = AdjustRiskLevel(DetermineRiskLevel(equity, drawdownPct, AccountFreeMargin()), equity, drawdownPct);
-   double lotSizeCalculated = CalculateConsolidatedLotSize(equity, 2.0, riskAdjusted, drawdownPct, slPoints);
-   double minLot = MarketInfo(sym, MODE_MINLOT);
-   double lotSize = MathMax(lotSizeCalculated, minLot);
-   
-   // Log computed trade parameters for diagnostics.
-   Log(StringFormat("Trade parameters: LotSize=%.2f, SLPoints=%.2f, TPPoints=%.2f, Spread=%.5f, ATR=%.5f", 
-         lotSize, slPoints, tpPoints, spread, atr), LOG_DEBUG);
-   
-   // Execute the order with a retry mechanism.
-   int maxExecutionRetries = 2;
-   bool executed = false;
-   for(int j = 0; j < maxExecutionRetries; j++) {
-       if(ExecuteStrategyLogic(strategy, lotSize, slPoints, tpPoints)) {
-           executed = true;
-           break;
-       }
-       Sleep(1000); // Wait 1 second before retrying.
+   // Determine order parameters based on the chosen strategy
+   switch(strategy)   {
+      case TrendFollowing:
+         sl = CalculateStopLoss(RiskMedium);
+         tp = CalculateTakeProfit(RiskMedium);
+         lotSize = CalculatePositionSize(RiskMedium, sl);
+         break;
+         
+      case Scalping:
+         sl = CalculateStopLoss(RiskLow);
+         tp = CalculateTakeProfit(RiskLow);
+         lotSize = CalculatePositionSize(RiskLow, sl);
+         break;
+         
+      // Add additional strategies here if needed...
+      
+      default:
+         Log("Unsupported strategy selected: " + IntegerToString(strategy), LOG_ERROR);
+         return false;
    }
    
-   if(!executed) {
-       Log("Execution failed after retries.", LOG_ERROR);
-       SetCustomError(1004);
-       return false;
+   // Check that the computed order parameters are valid
+   if(lotSize <= 0 || sl <= 0 || tp <= 0)   {
+      Log("Invalid order parameters. LotSize=" + DoubleToString(lotSize,2) +
+          " SL=" + DoubleToString(sl,2) +
+          " TP=" + DoubleToString(tp,2), LOG_ERROR);
+      return false;
    }
    
-   // Retrieve the ticket of the newly placed order.
-   int lastTicket = -1;
-   for(int k = OrdersTotal() - 1; k >= 0; k--) {
-       if(OrderSelect(k, SELECT_BY_POS)) {
-           lastTicket = OrderTicket();
-           break;
-       }
-   }
-   if(lastTicket <= 0) {
-       Log("No order found after execution.", LOG_WARNING);
-       return false;
+   // Choose order type based on market sentiment (example: bullish sentiment → Buy)
+   int orderType = (marketSentiment >= 0.5) ? OP_BUY : OP_SELL;
+   double price = (orderType == OP_BUY) ? Ask : Bid;
+   
+   // Validate price conditions to ensure SL and TP are correctly set relative to current price
+   if((orderType == OP_BUY && (sl >= price || tp <= price)) ||
+      (orderType == OP_SELL && (sl <= price || tp >= price)))   {
+      Log("Price conditions invalid for order execution. Current price=" + DoubleToString(price, Digits()), LOG_ERROR);
+      return false;
    }
    
-   Log("Order placed successfully. Ticket: " + IntegerToString(lastTicket), LOG_INFO);
+   // Execute the order using OrderSend with proper slippage and magic number
+   int slippage = Slippage; // Slippage as defined in your EA inputs
+   int ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
+   
+   if(ticket < 0)   {
+      int errorCode = GetLastError();
+      Log("OrderSend failed. Error: " + IntegerToString(errorCode), LOG_ERROR);
+      ResetLastError();
+      return false;
+   }
+   
+   Log("Order executed successfully. Ticket: " + IntegerToString(ticket) +
+       " Type: " + ((orderType == OP_BUY) ? "Buy" : "Sell") +
+       " LotSize: " + DoubleToString(lotSize, 2), LOG_INFO);
+   
    return true;
 }
 
