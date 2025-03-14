@@ -573,66 +573,67 @@ void SetRiskLevel(RiskLevelType riskLevel) {
 //| Calculate Stop Loss based on ATR, dynamically adjusting the multiplier                  |
 //+------------------------------------------------------------------+
 double CalculateStopLoss(int riskLevel){
-    // Validate riskLevel input
-    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
-        Log("Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-        return MAX_SL; // Return a default maximum SL
-    }
-
-    // Calculate ATR-based stop loss
-    double atrValue = iATR(NULL, 0, 14, 0); // 14-period ATR
-    if (atrValue <= 0)    {
-        Log("Invalid ATR value: " + DoubleToString(atrValue, 2), LOG_WARNING);
-        atrValue = FALLBACK_ATR; // Use fallback value
-    }
-
-    // Determine stop loss multiplier based on risk level
-    double slMultiplier = 1.0;
-    switch (riskLevel)    {
-        case RiskLow:
-            slMultiplier = 1.5;
-            break;
-        case RiskMedium:
-            slMultiplier = 1.0;
-            break;
-        case RiskHigh:
-            slMultiplier = 0.5;
-            break;
-    }
-
-    double stopLoss = atrValue * slMultiplier;
-    stopLoss = MathMin(stopLoss, MAX_SL); // Ensure SL does not exceed MAX_SL
-    return stopLoss;
+   // Validate riskLevel input
+   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
+      Log("CalculateStopLoss: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+      return MAX_SL; // Default maximum stop loss
+   }
+   
+   // Calculate ATR-based stop loss
+   double atrValue = iATR(NULL, 0, 14, 0);
+   if(atrValue <= 0)   {
+      Log("CalculateStopLoss: Invalid ATR value: " + DoubleToString(atrValue,2), LOG_WARNING);
+      atrValue = FALLBACK_ATR;
+   }
+   
+   // Determine stop loss multiplier based on risk level
+   double slMultiplier = 1.0;
+   switch(riskLevel)   {
+      case RiskLow:
+         slMultiplier = 1.5;
+         break;
+      case RiskMedium:
+         slMultiplier = 1.0;
+         break;
+      case RiskHigh:
+         slMultiplier = 0.5;
+         break;
+   }
+   
+   double stopLoss = atrValue * slMultiplier;
+   // Ensure stop loss does not exceed maximum allowed value
+   stopLoss = MathMin(stopLoss, MAX_SL);
+   return stopLoss;
 }
 
 //+------------------------------------------------------------------+
 //| Calculate Take Profit based on ATR, with dynamic adjustments     |
 //+------------------------------------------------------------------+
 double CalculateTakeProfit(int riskLevel){
-    // Validate riskLevel input
-    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
-        Log("Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-        return MAX_TP; // Return a default maximum TP
-    }
-
-    // Define risk-to-reward ratios based on risk level
-    double rrRatio = 2.0; // Default risk-to-reward ratio
-    switch (riskLevel)    {
-        case RiskLow:
-            rrRatio = 1.5;
-            break;
-        case RiskMedium:
-            rrRatio = 2.0;
-            break;
-        case RiskHigh:
-            rrRatio = 2.5;
-            break;
-    }
-
-    double stopLoss = CalculateStopLoss(riskLevel);
-    double takeProfit = stopLoss * rrRatio;
-    takeProfit = MathMin(takeProfit, MAX_TP); // Ensure TP does not exceed MAX_TP
-    return takeProfit;
+   // Validate riskLevel input
+   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
+      Log("CalculateTakeProfit: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+      return MAX_TP; // Default maximum take profit
+   }
+   
+   // Define risk-to-reward ratios based on risk level
+   double rrRatio = 2.0; // Default ratio
+   switch(riskLevel)   {
+      case RiskLow:
+         rrRatio = 1.5;
+         break;
+      case RiskMedium:
+         rrRatio = 2.0;
+         break;
+      case RiskHigh:
+         rrRatio = 2.5;
+         break;
+   }
+   
+   double stopLoss = CalculateStopLoss(riskLevel);
+   double takeProfit = stopLoss * rrRatio;
+   takeProfit = MathMin(takeProfit, MAX_TP);
+   return takeProfit;
 }
 
 //+------------------------------------------------------------------+
@@ -704,35 +705,27 @@ bool SetStopLossTakeProfit(double stopLoss, double takeProfit) {
 //| Calculate position size using risk percentage, dynamic volatility adjustment, and margin requirements        |
 //+------------------------------------------------------------------+
 double CalculatePositionSize(int riskLevel, double stopLoss){
-    // Validate inputs
-    if (riskLevel < RiskLow || riskLevel > RiskHigh)    {
-        Log("Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-        return 0.0;
-    }
-    if (stopLoss <= 0)    {
-        Log("Invalid stop loss value: " + DoubleToString(stopLoss, 2), LOG_ERROR);
-        return 0.0;
-    }
-
-    // Determine risk percentage based on risk level
-    double riskPercentage = DEFAULT_RISK_LEVEL;
-    switch (riskLevel)    {
-        case RiskLow:
-            riskPercentage = 0.01; // 1%
-            break;
-        case RiskMedium:
-            riskPercentage = 0.02; // 2%
-            break;
-        case RiskHigh:
-            riskPercentage = 0.03; // 3%
-            break;
-    }
-
-    double riskAmount = AccountEquity() * riskPercentage;
-    double lotSize = riskAmount / (stopLoss * Point);
-    lotSize = NormalizeDouble(lotSize, 2); // Adjust lot size precision
-    lotSize = MathMin(lotSize, MaxAllowedLotSize); // Ensure lot size does not exceed max allowed
-    return lotSize;
+   // Validate input parameters
+   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
+      Log("CalculatePositionSize: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+      return 0.0;
+   }
+   if(stopLoss <= 0)   {
+      Log("CalculatePositionSize: Invalid stop loss value: " + DoubleToString(stopLoss,2), LOG_ERROR);
+      return 0.0;
+   }
+   
+   // Set risk percentage based on risk level
+   double riskPercentage = (riskLevel == RiskLow) ? 0.01 : (riskLevel == RiskMedium) ? 0.02 : 0.03;
+   double riskAmount = AccountEquity() * riskPercentage;
+   
+   // Calculate lot size based on risk amount and stop loss in points
+   double lotSize = riskAmount / (stopLoss * Point);
+   lotSize = NormalizeDouble(lotSize, 2);
+   
+   // Ensure lot size does not exceed maximum allowed
+   lotSize = MathMin(lotSize, MaxAllowedLotSize);
+   return lotSize;
 }
 
 //+------------------------------------------------------------------+
@@ -1436,11 +1429,12 @@ string SomeOptimizationCheckFailed(double maxDrawdown, double currentDrawdown, d
 //------------------------------------------------------------------
 // Updates cached indicators with adaptive periods
 //------------------------------------------------------------------
-void UpdateCachedIndicators() {
+void UpdateCachedIndicators(){
+   // Update only on a new bar to save computation
    datetime currentBarTime = Time[0];
-   if (currentBarTime == lastIndicatorUpdateTime)
+   if(currentBarTime == lastIndicatorUpdateTime)
       return;
-      
+   
    lastIndicatorUpdateTime = currentBarTime;
    string sym = Symbol();
    int tf = timeframe;
@@ -1449,28 +1443,34 @@ void UpdateCachedIndicators() {
    cachedRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
    cachedFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
    cachedSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   cachedTrendStrength = CalculateMultiTimeframeTrendStrength();
+   cachedTrendStrength = CalculateMultiTimeframeTrendStrength(); // Existing multi-timeframe method
    
    cachedADX = iADX(sym, tf, 14, PRICE_CLOSE, MODE_MAIN, 0);
    cachedUpperBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
    cachedLowerBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
    cachedBollingerWidth = cachedUpperBand - cachedLowerBand;
    
-   // Validate indicators with fallback values
-   cachedATR = (IsValidIndicatorValue(cachedATR) == VALID) ? cachedATR : FALLBACK_ATR;
-   cachedRSI = (IsValidIndicatorValue(cachedRSI) == VALID) ? cachedRSI : FALLBACK_RSI;
-   cachedFastMA = (IsValidIndicatorValue(cachedFastMA) == VALID) ? cachedFastMA : FALLBACK_MA;
-   cachedSlowMA = (IsValidIndicatorValue(cachedSlowMA) == VALID) ? cachedSlowMA : FALLBACK_MA;
-   cachedTrendStrength = (IsValidIndicatorValue(cachedTrendStrength) == VALID) ? cachedTrendStrength : FALLBACK_TREND;
-   cachedADX = (IsValidIndicatorValue(cachedADX) == VALID) ? cachedADX : FALLBACK_ADX;
+   // Validate indicator values; if invalid, use fallback values
+   if(IsValidIndicatorValue(cachedATR) != VALID)
+      cachedATR = FALLBACK_ATR;
+   if(IsValidIndicatorValue(cachedRSI) != VALID)
+      cachedRSI = FALLBACK_RSI;
+   if(IsValidIndicatorValue(cachedFastMA) != VALID)
+      cachedFastMA = FALLBACK_MA;
+   if(IsValidIndicatorValue(cachedSlowMA) != VALID)
+      cachedSlowMA = FALLBACK_MA;
+   if(IsValidIndicatorValue(cachedTrendStrength) != VALID)
+      cachedTrendStrength = FALLBACK_TREND;
+   if(IsValidIndicatorValue(cachedADX) != VALID)
+      cachedADX = FALLBACK_ADX;
    
-   if (debugMode) {
-      Print("Updated indicators: ATR=", DoubleToString(cachedATR, 6),
-            " RSI=", DoubleToString(cachedRSI, 2),
-            " FastMA=", DoubleToString(cachedFastMA, 2),
-            " SlowMA=", DoubleToString(cachedSlowMA, 2),
-            " Trend=", DoubleToString(cachedTrendStrength, 2),
-            " ADX=", DoubleToString(cachedADX, 2));
+   if(debugMode)   {
+      Log("UpdateCachedIndicators: ATR=" + DoubleToString(cachedATR,6) +
+          " RSI=" + DoubleToString(cachedRSI,2) +
+          " FastMA=" + DoubleToString(cachedFastMA,2) +
+          " SlowMA=" + DoubleToString(cachedSlowMA,2) +
+          " Trend=" + DoubleToString(cachedTrendStrength,2) +
+          " ADX=" + DoubleToString(cachedADX,2), LOG_INFO);
    }
 }
 
@@ -5046,7 +5046,7 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment){
    // Validate input values
    if(equity <= 0 || drawdown < 0)   {
-      Log("Invalid equity or drawdown values.", LOG_ERROR);
+      Log("ExecuteStrategy: Invalid equity or drawdown.", LOG_ERROR);
       return false;
    }
    
@@ -5054,61 +5054,56 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
    double sl = 0.0;
    double tp = 0.0;
    
-   // Determine order parameters based on the chosen strategy
+   // Calculate order parameters based on selected strategy
    switch(strategy)   {
       case TrendFollowing:
          sl = CalculateStopLoss(RiskMedium);
          tp = CalculateTakeProfit(RiskMedium);
          lotSize = CalculatePositionSize(RiskMedium, sl);
          break;
-         
       case Scalping:
          sl = CalculateStopLoss(RiskLow);
          tp = CalculateTakeProfit(RiskLow);
          lotSize = CalculatePositionSize(RiskLow, sl);
          break;
-         
-      // Add additional strategies here if needed...
-      
+      // Extend with additional strategies as needed
       default:
-         Log("Unsupported strategy selected: " + IntegerToString(strategy), LOG_ERROR);
+         Log("ExecuteStrategy: Unsupported strategy " + IntegerToString(strategy), LOG_ERROR);
          return false;
    }
    
-   // Check that the computed order parameters are valid
+   // Validate computed order parameters
    if(lotSize <= 0 || sl <= 0 || tp <= 0)   {
-      Log("Invalid order parameters. LotSize=" + DoubleToString(lotSize,2) +
+      Log("ExecuteStrategy: Computed invalid parameters. LotSize=" + DoubleToString(lotSize,2) +
           " SL=" + DoubleToString(sl,2) +
           " TP=" + DoubleToString(tp,2), LOG_ERROR);
       return false;
    }
    
-   // Choose order type based on market sentiment (example: bullish sentiment → Buy)
+   // Select order type based on market sentiment (example threshold 0.5)
    int orderType = (marketSentiment >= 0.5) ? OP_BUY : OP_SELL;
    double price = (orderType == OP_BUY) ? Ask : Bid;
    
-   // Validate price conditions to ensure SL and TP are correctly set relative to current price
+   // Validate that SL and TP make sense relative to the current price
    if((orderType == OP_BUY && (sl >= price || tp <= price)) ||
       (orderType == OP_SELL && (sl <= price || tp >= price)))   {
-      Log("Price conditions invalid for order execution. Current price=" + DoubleToString(price, Digits()), LOG_ERROR);
+      Log("ExecuteStrategy: Price conditions invalid. Price=" + DoubleToString(price, Digits()), LOG_ERROR);
       return false;
    }
    
-   // Execute the order using OrderSend with proper slippage and magic number
-   int slippage = Slippage; // Slippage as defined in your EA inputs
+   // Execute the order with specified slippage and magic number
+   int slippage = Slippage;
    int ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
-   
    if(ticket < 0)   {
       int errorCode = GetLastError();
-      Log("OrderSend failed. Error: " + IntegerToString(errorCode), LOG_ERROR);
+      Log("ExecuteStrategy: OrderSend failed. Error: " + IntegerToString(errorCode), LOG_ERROR);
       ResetLastError();
       return false;
    }
    
-   Log("Order executed successfully. Ticket: " + IntegerToString(ticket) +
+   Log("ExecuteStrategy: Order executed successfully. Ticket: " + IntegerToString(ticket) +
        " Type: " + ((orderType == OP_BUY) ? "Buy" : "Sell") +
-       " LotSize: " + DoubleToString(lotSize, 2), LOG_INFO);
-   
+       " LotSize: " + DoubleToString(lotSize,2), LOG_INFO);
    return true;
 }
 
