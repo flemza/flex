@@ -192,44 +192,40 @@ VolatilityState volatilityState = { -1, 0, -1 }; // Initialize with default valu
 //| Expert Advisor Initialization                                    |
 //+------------------------------------------------------------------+
 int OnInit(){
-   // Seed random number generator
    MathSrand((int)TimeLocal());
    
-   // Set timer interval for periodic tasks (in seconds) using MQL4's EventSetTimer
+   // Use MT4 timer function
    EventSetTimer(60);
    
-   // Initialize logging system
    if(!InitializeLogging("", false, true))
       AddError("Logging setup failed.");
       
-   // Initialize Market Info
    MarketInfoData marketInfo;
    if(!InitializeMarketInfo(marketInfo))
       AddError("Market info initialization failed.");
       
-   // Resize dynamic arrays to expected size
    if(!ResizeArrays(100))
       AddError("Array resizing failed.");
       
-   // Initialize trade performance tracking array
    InitializeTradePerformanceArray();
-   
-   // Update cached indicators
    UpdateCachedIndicators();
    
-   // Select an initial trading strategy
+   // Get a valid strategy. EnhancedStrategySelection now never returns an invalid value.
    TradingStrategy selectedStrategy = EnhancedStrategySelection();
    if(selectedStrategy == INVALID_STRATEGY)   {
+      // This should not happen, but as a safety fallback:
       AddError("Invalid strategy selected. Defaulting to TrendFollowing.");
       selectedStrategy = TrendFollowing;
    }
    else   {
       Log("Initial strategy selected: " + StrategyToString(selectedStrategy), LOG_INFO);
    }
+   currentStrategy = selectedStrategy; // Set global strategy variable
    
-   // Optimize strategy parameters (if applicable)
-   if(OptimizeStrategyParameters() != NO_ERROR)
-      AddError("Strategy optimization failed. Using default settings.");
+   int optimizationResult = OptimizeStrategyParameters();
+   // Ensure that NO_ERROR (typically 0) is interpreted as success.
+   if(optimizationResult != NO_ERROR)
+      AddError("Strategy optimization failed. Using default settings. (Error Code: " + IntegerToString(optimizationResult) + ")");
    else
       Log("Strategy parameters optimized.", LOG_INFO);
    
@@ -1152,11 +1148,14 @@ string LogLevelToString(int logLevel, int localLogLevel) {
 }
 
 //+------------------------------------------------------------------+
-//| Simplified error handling                                        |
+//| Log an error message (includes error code if nonzero)            |
 //+------------------------------------------------------------------+
-void AddError(string message, int errorCode = 0) {
-   string newError = StringFormat("[%s] Error %d: %s\n", TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), errorCode, message);
-   Log(newError, LOG_ERROR);
+void AddError(string message, int errorCode=-1){
+   string fullMessage = message;
+   if(errorCode > 0)
+      fullMessage = "Error " + IntegerToString(errorCode) + ": " + message;
+      
+   Log(fullMessage, LOG_ERROR);
 }
 
 // Log the error with the error code and message
@@ -2603,28 +2602,25 @@ double GetIndicatorValue(string symbol, int period, IndicatorType indicatorType,
 // Enhanced Strategy Selection & Optimization based on Market Conditions
 //------------------------------------------------------------------
 TradingStrategy EnhancedStrategySelection(){
-   // Update indicators to ensure current market data is used.
+   // Update the cached indicators before making a decision
    UpdateCachedIndicators();
    
-   // Validate market conditions (e.g., ATR and timeframe)
+   // Check if the market conditions meet basic requirements
    if(!CheckStrategyValidity())   {
-      Log("EnhancedStrategySelection: Market conditions not met.", LOG_ERROR);
-      return INVALID_STRATEGY;
+      Log("EnhancedStrategySelection: Market conditions not met. Defaulting to TrendFollowing.", LOG_WARNING);
+      return TrendFollowing;
    }
    
-   // Use local copies with unique names to avoid hiding global variables
-   double localTrendStrength = cachedTrendStrength; // Global variable cachedTrendStrength remains unchanged
+   // Local copies of indicator values for clarity
+   double localTrendStrength = cachedTrendStrength;
    double localRSI           = cachedRSI;
    double localADX           = cachedADX;
    
-   // Log updated indicator values
    Log("EnhancedStrategySelection: Updated Indicators - TrendStrength=" + DoubleToString(localTrendStrength,2) +
        ", RSI=" + DoubleToString(localRSI,2) +
        ", ADX=" + DoubleToString(localADX,2), LOG_INFO);
    
-   // Decision logic based on indicator values:
-   // If ADX is high (>=25) and trend strength is strong, select TrendFollowing.
-   // If RSI indicates oversold (<30) or overbought (>70), select MeanReversion.
+   // Example decision logic:
    if(localADX >= 25 && localTrendStrength > 50)   {
       Log("EnhancedStrategySelection: Conditions favor TrendFollowing.", LOG_INFO);
       return TrendFollowing;
@@ -10063,37 +10059,24 @@ bool ReassessParameters(int optimizationInterval = 10) {
    return true;
 }
 
-//------------------------------------------------------------------
-// Converts a TradingStrategy enum to a string for logging purposes
-//------------------------------------------------------------------
-string StrategyToString(const TradingStrategy strategy) {
-    switch (strategy) {
-        case TrendFollowing:
-            return "TrendFollowing";
-        case Scalping:
-            return "Scalping";
-        case RangeBound:
-            return "RangeBound";
-        case Hybrid:
-            return "Hybrid";
-        case CounterTrend:
-            return "CounterTrend";
-        case Grid:
-            return "Grid";
-        case MeanReversion:
-            return "MeanReversion";
-        case Breakout:
-            return "Breakout";
-        case Momentum:
-            return "Momentum";
-        case OtherStrategy:
-            return "OtherStrategy";
-        case SafeMode:
-            return "SafeMode";
-        default:
-            Print("Warning: Unknown TradingStrategy value: ", (int)strategy);
-            return StringFormat("Unknown(%d)", (int)strategy);
-    }
+//+------------------------------------------------------------------+
+//| Convert TradingStrategy enum to string                           |
+//+------------------------------------------------------------------+
+string StrategyToString(TradingStrategy strategy){
+   switch(strategy)   {
+      case TrendFollowing: return "TrendFollowing";
+      case Scalping:       return "Scalping";
+      case RangeBound:     return "RangeBound";
+      case Hybrid:         return "Hybrid";
+      case CounterTrend:   return "CounterTrend";
+      case Grid:           return "Grid";
+      case MeanReversion:  return "MeanReversion";
+      case Breakout:       return "Breakout";
+      case Momentum:       return "Momentum";
+      case OtherStrategy:  return "OtherStrategy";
+      case SafeMode:       return "SafeMode";
+      default:           return "Unknown TradingStrategy (" + IntegerToString(strategy) + ")";
+   }
 }
 
 //------------------------------------------------------------------
