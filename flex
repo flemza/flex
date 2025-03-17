@@ -304,108 +304,97 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
    return true;
 }
 
-//------------------------------------------------------------------
-// OnTick Event - Main Trading Logic with Volatility Filtering and Adaptive Checks
-//------------------------------------------------------------------
-void OnTick(){
-   static datetime lastExecutionTime = 0;
-   datetime currentTime = TimeCurrent();
-   int minInterval = GetDynamicExecutionInterval(); // dynamic interval based on volatility
-   
-   // Prevent overtrading by checking if minimum interval has passed
-   if(currentTime - lastExecutionTime < minInterval)   {
-      Log("OnTick: Execution skipped to avoid overtrading.", LOG_INFO);
-      return;
-   }
-   
-   double equity = AccountEquity();
-   double drawdown = cachedDrawdownPercentage;
-   double sentiment = cachedMarketSentiment;
-   
-   // Re-check strategy using enhanced filtering
-   TradingStrategy strategy = EnhancedStrategySelection();
-   if(strategy == INVALID_STRATEGY)   {
-      Log("OnTick: No valid strategy selected. Aborting execution.", LOG_ERROR);
-      return;
-   }
-   
-   // Check market volatility and only trade when within acceptable bounds
-   double currentVolatility = MarketVolatility();
-   if(currentVolatility < 0.1 || currentVolatility > 2.0)   {
-      Log("OnTick: Volatility (" + DoubleToString(currentVolatility,2) + ") out of acceptable range. Trade skipped.", LOG_WARNING);
-      return;
-   }
-   
-   if(!ExecuteStrategy(strategy, equity, drawdown, sentiment))   {
-      int error = GetLastError();
-      if(IsRetryableError(error))      {
-         Log("OnTick: Retryable error during strategy execution. Error: " + IntegerToString(error), LOG_WARNING);
-         AdjustRiskParametersForRetry();
-      }
-      else      {
-         Log("OnTick: Non-retryable error. Aborting execution. Error: " + IntegerToString(error), LOG_ERROR);
-      }
-   }
-   else   {
-      lastExecutionTime = currentTime;
-      Log("OnTick: Strategy executed successfully.", LOG_INFO);
-      UpdateStopLossTakeProfit();
-      UpdateTrailingStop();
-      MoveStopToBreakEven();
-   }
+//+------------------------------------------------------------------+
+//| OnTick Event - Improved version                                  |
+//+------------------------------------------------------------------+
+void OnTick() {
+    static datetime lastExecutionTime = 0;
+    datetime currentTime = TimeCurrent();
+    int minInterval = GetDynamicExecutionInterval();
+    
+    // Prevent overtrading by enforcing a minimum interval between executions
+    if (currentTime - lastExecutionTime < minInterval) {
+       Log("Skipping tick to avoid overtrading.", LOG_INFO);
+       return;
+    }
+    
+    double equity = AccountEquity();
+    TradingStrategy strategy = SelectBestStrategy();
+    if (strategy == INVALID_STRATEGY) {
+       Log("Invalid strategy selected.", LOG_ERROR);
+       return;
+    }
+    
+    // Execute the selected strategy
+    if (!ExecuteStrategy(strategy, equity, cachedDrawdownPercentage, cachedMarketSentiment)) {
+       int error = GetLastError();
+       if (IsRetryableError(error)) {
+           Log("Retrying execution. Error: " + IntegerToString(error), LOG_WARNING);
+           AdjustRiskParametersForRetry(); // adapt risk parameters for a potential retry
+       } else {
+           Log("Aborting execution due to non-retryable error: " + IntegerToString(error), LOG_ERROR);
+       }
+    } else {
+       lastExecutionTime = currentTime;
+       Log("Strategy executed successfully.", LOG_INFO);
+       UpdateStopLossTakeProfit();
+       UpdateTrailingStop();
+       MoveStopToBreakEven();
+    }
 }
 
-//------------------------------------------------------------------
-// OnTimer Event - Periodic Tasks for Risk Management, Re-Optimization, and Maintenance
-//------------------------------------------------------------------
-void OnTimer(){
-   static datetime lastCheck = 0, lastOptionalTaskRun = 0, lastStrategyOptimizationTime = 0;
-   datetime currentTime = TimeCurrent();
-   const int strategyOptimizationCooldown = 900; // 15 minutes cooldown
-   
-   if(currentTime - lastCheck < performanceCheckInterval)
-      return;
-   lastCheck = currentTime;
-   
-   // Check for recovery mode or breached risk limits
-   if(CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage()))   {
-      Log("OnTimer: Risk limits breached or recovery mode active. Trading disabled.", LOG_WARNING);
-      return;
-   }
-   
-   // Manage existing orders before opening new ones
-   if(HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK)   {
-      Log("OnTimer: Failed to handle existing orders.", LOG_ERROR);
-      return;
-   }
-   
-   // Update indicators if needed
-   if(ShouldUpdateIndicators(0.0010, 0, false))
-      UpdateCachedIndicators();
-   
-   cachedDrawdownPercentage = CalculateDrawdownPercentage();
-   cachedMarketSentiment = CalculateMarketSentiment();
-   AdjustSLTP();
-   EvaluateStrategyPerformance();
-   ExecuteAllStrategies();
-   
-   // Periodically trigger strategy optimization to adapt to market changes
-   if(currentTime - lastStrategyOptimizationTime >= strategyOptimizationCooldown)   {
-      Log("OnTimer: Triggering strategy optimization.", LOG_INFO);
-      ResetAndOptimizeStrategy();
-      lastStrategyOptimizationTime = currentTime;
-   }
-   
-   if(ShouldLogPerformanceMetrics(LOG_INFO))
-      LogPerformanceMetrics();
-   
-   // Run additional optional tasks on an hourly basis
-   if(currentTime - lastOptionalTaskRun >= 3600)   {
-      RunOptionalTasks();
-      lastOptionalTaskRun = currentTime;
-   }
-   
-   Log("OnTimer: Tasks completed successfully.", LOG_INFO);
+//+------------------------------------------------------------------+
+//| OnTimer Event - Improved version                                 |
+//+------------------------------------------------------------------+
+void OnTimer() {
+    static datetime lastCheck = 0;
+    static datetime lastOptionalTaskRun = 0;
+    static datetime lastStrategyOptimizationTime = 0;
+    datetime currentTime = TimeCurrent();
+    
+    // Run timer tasks at defined performance intervals
+    if (currentTime - lastCheck < performanceCheckInterval)
+       return;
+    lastCheck = currentTime;
+    
+    // Check for recovery mode or excessive risk
+    if (CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage())) {
+       Log("Risk limits breached or recovery mode active. Trading disabled.", LOG_WARNING);
+       return;
+    }
+    
+    // Handle open orders and update market data
+    if (HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK) {
+       Log("Failed to handle existing orders.", LOG_ERROR);
+       return;
+    }
+    
+    if (ShouldUpdateIndicators(0.0010, 0, false))
+       UpdateCachedIndicators();
+    
+    cachedDrawdownPercentage = CalculateDrawdownPercentage();
+    cachedMarketSentiment = CalculateMarketSentiment();
+    AdjustSLTP();
+    EvaluateStrategyPerformance();
+    ExecuteAllStrategies();
+    
+    // Strategy optimization at cooldown intervals
+    const int strategyOptimizationCooldown = 900; // 15 minutes
+    if (currentTime - lastStrategyOptimizationTime >= strategyOptimizationCooldown) {
+       Log("Triggering strategy optimization.", LOG_INFO);
+       ResetAndOptimizeStrategy();
+       lastStrategyOptimizationTime = currentTime;
+    }
+    
+    if (ShouldLogPerformanceMetrics(LOG_INFO))
+       LogPerformanceMetrics();
+    
+    if (currentTime - lastOptionalTaskRun >= 3600) {
+       RunOptionalTasks();
+       lastOptionalTaskRun = currentTime;
+    }
+    
+    Log("OnTimer tasks completed successfully.", LOG_INFO);
 }
 
 //+------------------------------------------------------------------+
@@ -428,37 +417,36 @@ void UpdateStopLossTakeProfit(){
 }
 
 //+------------------------------------------------------------------+
-//| Update trailing stops for open orders                            |
+//| Update trailing stops for open orders - Improved version         |
 //+------------------------------------------------------------------+
-void UpdateTrailingStop(){
-   string sym = Symbol();
-   int totalOrders = OrdersTotal();
-   double tickSize = MarketInfo(sym, MODE_TICKSIZE);
-   double trailingStart = 20 * tickSize;
-   double trailingStep = 5 * tickSize;
-   
-   for(int i = 0; i < totalOrders; i++)   {
-      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))      {
-         if(OrderSymbol() != sym)
-            continue;
-         
-         int orderType = OrderType();
-         double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
-         double openPrice = OrderOpenPrice();
-         double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
-         
-         if(profitPips >= (trailingStart / tickSize))         {
-            double newSL = (orderType == OP_BUY) ? currentPrice - trailingStep : currentPrice + trailingStep;
-            if((orderType == OP_BUY && newSL > OrderStopLoss()) ||
-               (orderType == OP_SELL && newSL < OrderStopLoss()))            {
-               if(OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrYellow))
-                  Log("Trailing stop updated for order #" + IntegerToString(OrderTicket()), LOG_INFO);
-               else
-                  Log("Failed to update trailing stop for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
+void UpdateTrailingStop() {
+    string symbol = Symbol();
+    int totalOrders = OrdersTotal();
+    double tickSize = MarketInfo(symbol, MODE_TICKSIZE);
+    double trailingStart = 20 * tickSize;
+    double trailingStep  = 5 * tickSize;
+    
+    for (int i = 0; i < totalOrders; i++) {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) {
+            if (OrderSymbol() != symbol)
+                continue;
+            int orderType = OrderType();
+            double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
+            double openPrice = OrderOpenPrice();
+            double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
+            
+            // Update trailing stop only when profit threshold is met
+            if (profitPips >= (trailingStart / tickSize)) {
+                double newSL = (orderType == OP_BUY) ? currentPrice - trailingStep : currentPrice + trailingStep;
+                if ((orderType == OP_BUY && newSL > OrderStopLoss()) || (orderType == OP_SELL && newSL < OrderStopLoss())) {
+                    if (OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrYellow))
+                        Log("Trailing stop updated for order #" + IntegerToString(OrderTicket()), LOG_INFO);
+                    else
+                        Log("Failed to update trailing stop for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
+                }
             }
-         }
-      }
-   }
+        }
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -625,26 +613,31 @@ string RiskLevelToString(RiskLevelType level){
 //+------------------------------------------------------------------+
 //| Calculate Stop Loss based on ATR and risk level                  |
 //+------------------------------------------------------------------+
-double CalculateStopLoss(RiskLevelType riskLevel){
-   double atr = cachedATR;
-   if(atr <= 0)   {
-      Log("Error: Invalid ATR value: " + DoubleToString(atr,6), LOG_ERROR);
-      return -1;
-   }
-   
-   double dynamicFactor = atr / FALLBACK_ATR;
-   double multiplier = 2.0 * dynamicFactor; // default multiplier
-   
-   if(riskLevel == RiskLow)
-      multiplier = 1.5 * dynamicFactor;
-   else if(riskLevel == RiskMedium)
-      multiplier = 2.0 * dynamicFactor;
-   else if(riskLevel == RiskHigh)
-      multiplier = 3.0 * dynamicFactor;
-      
-   double stopLoss = atr * multiplier;
-   Log("Calculated dynamic Stop Loss for " + RiskLevelToString(riskLevel) + ": " + DoubleToString(stopLoss,4), LOG_INFO);
-   return stopLoss;
+double CalculateStopLoss(int riskLevel) {
+    // Validate risk level input
+    if(riskLevel < RiskLow || riskLevel > RiskHigh) {
+       Log("CalculateStopLoss: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
+       return MAX_SL; // Return a safe maximum value
+    }
+    
+    // Calculate ATR-based stop loss
+    double atrValue = iATR(NULL, 0, ATRPeriod, 0);
+    if(atrValue <= 0) {
+       Log("CalculateStopLoss: Invalid ATR value: " + DoubleToString(atrValue, 2) + ". Using fallback.", LOG_WARNING);
+       atrValue = FALLBACK_ATR;
+    }
+    
+    // Determine stop loss multiplier based on risk level
+    double slMultiplier = 1.0;
+    if(riskLevel == RiskLow)
+       slMultiplier = 1.5;
+    else if(riskLevel == RiskMedium)
+       slMultiplier = 1.0;
+    else if(riskLevel == RiskHigh)
+       slMultiplier = 0.75;
+    
+    double calculatedSL = atrValue * slMultiplier;
+    return calculatedSL;
 }
 
 //+------------------------------------------------------------------+
