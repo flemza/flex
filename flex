@@ -110,7 +110,7 @@ double cachedLowerBand;
 double cachedIndicators[10];  // Array for multiple indicators
 extern int ATRPeriod = 14;  // ATR period (can be adjusted as input)
 extern double exitRecoveryThreshold = 0.5;      // Example threshold; set appropriately
-int timeframe = PERIOD_H1;
+int TF = PERIOD_H1;
 int strategyConsecutiveLosses[6] = {0, 0, 0, 0, 0, 0};  // Array for consecutive losses for each strategy
 int performanceCheckInterval = 60;  // Time interval in seconds for checking performance
 int logFileHandle = -1;
@@ -169,6 +169,7 @@ struct TrendInfoConfig {bool isVerboseLoggingEnabled; double adxThreshold;};
 struct StrategyThreshold {TradingStrategy strategy; double threshold;};
 struct StrategyTP {string strategy; double multiplier;};
 struct StrategyPerformanceResult {double performance; bool error;};
+struct IndicatorCache {double atr; double rsi; double fastMA; double slowMA; double adx; double upperBand; double lowerBand; double bollingerWidth; double trendStrength; double macdMain; double macdSignal; datetime lastUpdate;};
 
 double errorStack[];
 double requestedPrices[];  // Array to store requested prices for multiple trades
@@ -188,6 +189,7 @@ TradingStrategy currentStrategy = TrendFollowing;
 TradingStrategy fallbackStrategy = TrendFollowing;  // Default safer strategy
 StrategyState g_strategyState; // Global state
 IndicatorLogTimes logTimes = {};
+IndicatorCache g_IndicatorCache;
 VolatilityState volatilityState = { -1, 0, -1 }; // Initialize with default values
 
 //+------------------------------------------------------------------+
@@ -308,39 +310,50 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
 //| OnTick Event - Improved version                                  |
 //+------------------------------------------------------------------+
 void OnTick() {
-    static datetime lastExecutionTime = 0;
-    datetime currentTime = TimeCurrent();
-    int minInterval = GetDynamicExecutionInterval();
-    
-    // Prevent overtrading by enforcing a minimum interval between executions
-    if (currentTime - lastExecutionTime < minInterval) {
-       Log("Skipping tick to avoid overtrading.", LOG_INFO);
-       return;
-    }
-    
-    double equity = AccountEquity();
-    TradingStrategy strategy = SelectBestStrategy();
-    if (strategy == INVALID_STRATEGY) {
-       Log("Invalid strategy selected.", LOG_ERROR);
-       return;
-    }
-    
-    // Execute the selected strategy
-    if (!ExecuteStrategy(strategy, equity, cachedDrawdownPercentage, cachedMarketSentiment)) {
-       int error = GetLastError();
-       if (IsRetryableError(error)) {
-           Log("Retrying execution. Error: " + IntegerToString(error), LOG_WARNING);
-           AdjustRiskParametersForRetry(); // adapt risk parameters for a potential retry
-       } else {
-           Log("Aborting execution due to non-retryable error: " + IntegerToString(error), LOG_ERROR);
-       }
-    } else {
-       lastExecutionTime = currentTime;
-       Log("Strategy executed successfully.", LOG_INFO);
-       UpdateStopLossTakeProfit();
-       UpdateTrailingStop();
-       MoveStopToBreakEven();
-    }
+   // Update the indicator cache if a new candle has formed
+   UpdateIndicatorCache(Symbol(), Timeframe);
+   
+   // (Optional) Retrieve cached indicator values if needed in your logic
+   double currentATR = GetCachedATR();
+   double currentRSI = GetCachedRSI();
+   // You can add additional cached values (FastMA, SlowMA, etc.) as needed
+
+   static datetime lastExecutionTime = 0;
+   datetime currentTime = TimeCurrent();
+   int minInterval = GetDynamicExecutionInterval();
+   
+   if (currentTime - lastExecutionTime < minInterval) {
+      Log("Execution skipped to avoid overtrading.", LOG_INFO);
+      return;
+   }
+   
+   double equity = AccountEquity();
+   double drawdown = cachedDrawdownPercentage;
+   double sentiment = cachedMarketSentiment;
+   
+   TradingStrategy strategy = SelectBestStrategy();
+   if (strategy == INVALID_STRATEGY) {
+      Log("No valid strategy selected. Aborting execution.", LOG_ERROR);
+      return;
+   }
+   
+   if (!ExecuteStrategy(strategy, equity, drawdown, sentiment)) {
+      int error = GetLastError();
+      if (IsRetryableError(error)) {
+         Log("Retrying execution. Error: " + IntegerToString(error), LOG_WARNING);
+         AdjustRiskParametersForRetry();
+      }
+      else {
+         Log("Aborting execution. Error: " + IntegerToString(error), LOG_ERROR);
+      }
+   }
+   else {
+      lastExecutionTime = currentTime;
+      Log("Strategy executed successfully.", LOG_INFO);
+      UpdateStopLossTakeProfit();
+      UpdateTrailingStop();
+      MoveStopToBreakEven();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1463,6 +1476,71 @@ string SomeOptimizationCheckFailed(double maxDrawdown, double currentDrawdown, d
    return "";
 }
 
+// Function to update the indicator cache only when a new candle is detected
+void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
+   if (symbol == NULL || StringLen(symbol) == 0)
+      symbol = Symbol();
+   
+   datetime currentCandleTime = iTime(symbol, timeframe, 0);
+   if (g_IndicatorCache.lastUpdate == currentCandleTime)
+      return;
+
+   // Compute indicators
+   double atrValue = iATR(symbol, timeframe, ATRPeriod, 0);
+   double rsiValue = iRSI(symbol, timeframe, RSIPeriod, PRICE_CLOSE, 0);
+   double fastMAValue = iMA(symbol, timeframe, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double slowMAValue = iMA(symbol, timeframe, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double adxValue = iADX(symbol, timeframe, 14, PRICE_CLOSE, MODE_MAIN, 0);
+   double upperBand = iBands(symbol, timeframe, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
+   double lowerBand = iBands(symbol, timeframe, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
+   double localTrendStrength = CalculateMultiTimeframeTrendStrength();
+   double macdMain = iMACD(symbol, timeframe, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
+   double macdSignal = iMACD(symbol, timeframe, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
+   double bollingerWidth = upperBand - lowerBand;
+
+   // Apply fallbacks if necessary
+   atrValue = (IsValidIndicatorValue(atrValue) ? atrValue : FALLBACK_ATR);
+   rsiValue = (IsValidIndicatorValue(rsiValue) ? rsiValue : FALLBACK_RSI);
+   fastMAValue = (IsValidIndicatorValue(fastMAValue) ? fastMAValue : FALLBACK_MA);
+   slowMAValue = (IsValidIndicatorValue(slowMAValue) ? slowMAValue : FALLBACK_MA);
+   adxValue = (IsValidIndicatorValue(adxValue) ? adxValue : FALLBACK_ADX);
+   trendStrength = (IsValidIndicatorValue(trendStrength) ? trendStrength : FALLBACK_TREND);
+   macdMain = (IsValidIndicatorValue(macdMain) ? macdMain : 0);
+   macdSignal = (IsValidIndicatorValue(macdSignal) ? macdSignal : 0);
+
+   // Update cache
+   g_IndicatorCache.atr = atrValue;
+   g_IndicatorCache.rsi = rsiValue;
+   g_IndicatorCache.fastMA = fastMAValue;
+   g_IndicatorCache.slowMA = slowMAValue;
+   g_IndicatorCache.adx = adxValue;
+   g_IndicatorCache.upperBand = upperBand;
+   g_IndicatorCache.lowerBand = lowerBand;
+   g_IndicatorCache.bollingerWidth = bollingerWidth;
+   g_IndicatorCache.trendStrength = trendStrength;
+   g_IndicatorCache.macdMain = macdMain;
+   g_IndicatorCache.macdSignal = macdSignal;
+   g_IndicatorCache.lastUpdate = currentCandleTime;
+
+   // Log update
+   if (debugMode) {
+      LogMessage(LOG_INFO, "Indicators updated: ATR=" + DoubleToString(atrValue,6) +
+                           " RSI=" + DoubleToString(rsiValue,2) +
+                           " FastMA=" + DoubleToString(fastMAValue,2) +
+                           " SlowMA=" + DoubleToString(slowMAValue,2) +
+                           " ADX=" + DoubleToString(adxValue,2) +
+                           " Trend=" + DoubleToString(trendStrength,2) +
+                           " MACD_MAIN=" + DoubleToString(macdMain,2) +
+                           " MACD_SIGNAL=" + DoubleToString(macdSignal,2));
+   }
+}
+
+// Utility functions to access the cached indicator values
+double GetCachedATR()   { return g_IndicatorCache.atr; }
+double GetCachedRSI()   { return g_IndicatorCache.rsi; }
+double GetCachedFastMA(){ return g_IndicatorCache.fastMA; }
+double GetCachedSlowMA(){ return g_IndicatorCache.slowMA; }
+
 //------------------------------------------------------------------
 // Updates cached indicators with adaptive periods
 //------------------------------------------------------------------
@@ -1473,7 +1551,7 @@ void UpdateCachedIndicators(){
    
    lastIndicatorUpdateTime = currentBarTime;
    string sym = Symbol();
-   int tf = timeframe;
+   int tf = TF;
    
    cachedATR = iATR(sym, tf, ATRPeriod, 0);
    cachedRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
@@ -1909,7 +1987,7 @@ void UpdateTrendStrength() {
     const string sym = Symbol();
     double fastMA = cachedFastMA;
     double slowMA = cachedSlowMA;
-    double adx    = iADX(sym, timeframe, 14, PRICE_CLOSE, MODE_MAIN, 0);
+    double adx    = iADX(sym, TF, 14, PRICE_CLOSE, MODE_MAIN, 0);
     
     // Abort if any indicator is invalid
     if (fastMA == 0 || slowMA == 0 || adx == EMPTY_VALUE)
