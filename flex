@@ -304,15 +304,15 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
    return true;
 }
 
-//+------------------------------------------------------------------+
-//| OnTick Event - main trading logic                                |
-//+------------------------------------------------------------------+
+//------------------------------------------------------------------
+// OnTick Event - Main Trading Logic with Volatility Filtering and Adaptive Checks
+//------------------------------------------------------------------
 void OnTick(){
    static datetime lastExecutionTime = 0;
    datetime currentTime = TimeCurrent();
    int minInterval = GetDynamicExecutionInterval(); // dynamic interval based on volatility
    
-   // Prevent overtrading: if the time interval has not passed, exit.
+   // Prevent overtrading by checking if minimum interval has passed
    if(currentTime - lastExecutionTime < minInterval)   {
       Log("OnTick: Execution skipped to avoid overtrading.", LOG_INFO);
       return;
@@ -322,14 +322,14 @@ void OnTick(){
    double drawdown = cachedDrawdownPercentage;
    double sentiment = cachedMarketSentiment;
    
-   // Recheck strategy if market conditions have changed significantly
+   // Re-check strategy using enhanced filtering
    TradingStrategy strategy = EnhancedStrategySelection();
    if(strategy == INVALID_STRATEGY)   {
       Log("OnTick: No valid strategy selected. Aborting execution.", LOG_ERROR);
       return;
    }
    
-   // Only execute trades when market volatility is within acceptable range.
+   // Check market volatility and only trade when within acceptable bounds
    double currentVolatility = MarketVolatility();
    if(currentVolatility < 0.1 || currentVolatility > 2.0)   {
       Log("OnTick: Volatility (" + DoubleToString(currentVolatility,2) + ") out of acceptable range. Trade skipped.", LOG_WARNING);
@@ -355,9 +355,9 @@ void OnTick(){
    }
 }
 
-//+------------------------------------------------------------------+
-//| OnTimer Event - periodic tasks for risk management and updates     |
-//+------------------------------------------------------------------+
+//------------------------------------------------------------------
+// OnTimer Event - Periodic Tasks for Risk Management, Re-Optimization, and Maintenance
+//------------------------------------------------------------------
 void OnTimer(){
    static datetime lastCheck = 0, lastOptionalTaskRun = 0, lastStrategyOptimizationTime = 0;
    datetime currentTime = TimeCurrent();
@@ -367,7 +367,7 @@ void OnTimer(){
       return;
    lastCheck = currentTime;
    
-   // Check if recovery mode or risk limits are breached
+   // Check for recovery mode or breached risk limits
    if(CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage()))   {
       Log("OnTimer: Risk limits breached or recovery mode active. Trading disabled.", LOG_WARNING);
       return;
@@ -379,7 +379,7 @@ void OnTimer(){
       return;
    }
    
-   // Update indicators if necessary
+   // Update indicators if needed
    if(ShouldUpdateIndicators(0.0010, 0, false))
       UpdateCachedIndicators();
    
@@ -389,7 +389,7 @@ void OnTimer(){
    EvaluateStrategyPerformance();
    ExecuteAllStrategies();
    
-   // Periodically re-optimize strategy parameters
+   // Periodically trigger strategy optimization to adapt to market changes
    if(currentTime - lastStrategyOptimizationTime >= strategyOptimizationCooldown)   {
       Log("OnTimer: Triggering strategy optimization.", LOG_INFO);
       ResetAndOptimizeStrategy();
@@ -399,7 +399,7 @@ void OnTimer(){
    if(ShouldLogPerformanceMetrics(LOG_INFO))
       LogPerformanceMetrics();
    
-   // Run additional optional tasks every hour
+   // Run additional optional tasks on an hourly basis
    if(currentTime - lastOptionalTaskRun >= 3600)   {
       RunOptionalTasks();
       lastOptionalTaskRun = currentTime;
@@ -569,23 +569,23 @@ void AdjustRiskParametersForRetry(int maxDrawdown = 10){
        ", Peak Equity: " + DoubleToString(peakEquity,2), LOG_INFO);
 }
 
-//+------------------------------------------------------------------+
-//| Set the risk level and adjust position size, SL, and TP           |
-//+------------------------------------------------------------------+
+//------------------------------------------------------------------
+// Set the risk level and adjust position size, stop loss, and take profit
+//------------------------------------------------------------------
 void SetRiskLevel(RiskLevelType riskLevel){
    if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
       Log("SetRiskLevel: Invalid risk level.", LOG_ERROR);
       return;
    }
    
-   const double riskPercentage = 0.02; // This can be parameterized or optimized
+   const double riskPercentage = 0.02; // Risk percentage per trade; can be made adaptive
    double calculatedSL = CalculateStopLoss(riskLevel);
    if(calculatedSL < 0)   {
       Log("SetRiskLevel: Calculated stop loss is invalid.", LOG_ERROR);
       return;
    }
    
-   // Adjusted position sizing call using updated parameters
+   // Calculate position size based on stop loss and risk percentage
    double positionSize = CalculatePositionSize(calculatedSL, riskPercentage);
    if(positionSize <= 0)   {
       Log("SetRiskLevel: Invalid position size.", LOG_ERROR);
@@ -610,9 +610,9 @@ void SetRiskLevel(RiskLevelType riskLevel){
    SetStopLossTakeProfit(finalSL, finalTP);
 }
 
-//+------------------------------------------------------------------+
-//| Convert RiskLevelType enum to string                             |
-//+------------------------------------------------------------------+
+//------------------------------------------------------------------
+// Convert RiskLevelType enum to a human-readable string
+//------------------------------------------------------------------
 string RiskLevelToString(RiskLevelType level){
    switch(level)   {
       case RiskLow:    return "RiskLow";
@@ -2622,32 +2622,43 @@ double GetIndicatorValue(string symbol, int period, IndicatorType indicatorType,
 // Enhanced Strategy Selection & Optimization based on Market Conditions
 //------------------------------------------------------------------
 TradingStrategy EnhancedStrategySelection(){
-   UpdateCachedIndicators();  
-
+   // Update cached indicators to ensure we have fresh data
+   UpdateCachedIndicators();
+   
+   // Check basic validity (e.g., sufficient data, no extreme conditions)
    if(!CheckStrategyValidity())   {
       Log("EnhancedStrategySelection: Market conditions not met. Defaulting to TrendFollowing.", LOG_WARNING);
       return TrendFollowing;
    }
    
-   double localTrendStrength = cachedTrendStrength;
-   double localRSI           = cachedRSI;
-   double localADX           = cachedADX;
-   double localMACD          = cachedIndicators[INDICATOR_MACD_MAIN];
+   // Local copies for clarity
+   double localTrendStrength = cachedTrendStrength;  // e.g., from a moving average slope or similar
+   double localRSI           = cachedRSI;            // RSI indicator value
+   double localADX           = cachedADX;            // ADX for trend strength
+   double localMACD          = cachedIndicators[INDICATOR_MACD_MAIN]; // MACD main line
+   double localMACDSignal    = cachedIndicators[INDICATOR_MACD_SIGNAL]; // MACD signal line
+   double macdHistogram      = localMACD - localMACDSignal; // Extra confirmation signal
 
    Log("EnhancedStrategySelection: Indicators - TrendStrength=" + DoubleToString(localTrendStrength,2) +
        ", RSI=" + DoubleToString(localRSI,2) +
        ", ADX=" + DoubleToString(localADX,2) +
-       ", MACD=" + DoubleToString(localMACD,2), LOG_INFO);
-
-   if(localADX >= 25 && localTrendStrength > 50 && localMACD > 0)   {
+       ", MACD=" + DoubleToString(localMACD,2) +
+       ", MACDSignal=" + DoubleToString(localMACDSignal,2) +
+       ", MACDHistogram=" + DoubleToString(macdHistogram,2), LOG_INFO);
+   
+   // Example filtering logic:
+   // Favor TrendFollowing if ADX is strong, trend strength is high, and MACD histogram is positive.
+   if(localADX >= 25 && localTrendStrength > 50 && macdHistogram > 0.1)   {
       Log("EnhancedStrategySelection: Conditions favor TrendFollowing.", LOG_INFO);
       return TrendFollowing;
    }
-   else if(localRSI < 30 && localMACD < 0)   {
+   // If RSI is oversold and MACD histogram is negative, favor MeanReversion.
+   else if(localRSI < 30 && macdHistogram < -0.1)   {
       Log("EnhancedStrategySelection: Conditions favor MeanReversion (Oversold).", LOG_INFO);
       return MeanReversion;
    }
-   else if(localRSI > 70 && localMACD > 0)   {
+   // If RSI is overbought and MACD histogram is positive, favor MeanReversion.
+   else if(localRSI > 70 && macdHistogram > 0.1)   {
       Log("EnhancedStrategySelection: Conditions favor MeanReversion (Overbought).", LOG_INFO);
       return MeanReversion;
    }
