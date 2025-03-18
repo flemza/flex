@@ -45,7 +45,7 @@ enum ParameterType {Param_RiskLevel, Param_SL, Param_TP, Param_ATR};
 enum IndicatorType {INDICATOR_RSI, INDICATOR_MACD_MAIN};
 enum MarketCondition {VOLATILE, NEUTRAL, REVERSING, TRENDING, RANGE_BOUND, SHORT_TRADE, UNKNOWN};
 enum VolatilityCheckError {VOLATILITY_SUCCESS = 0, MISSING_SYMBOL, OUT_OF_RANGE, INSUFFICIENT_DATA, INVALID_ATR, VOLATILITY_TOO_HIGH};
-enum IndicatorValidationResult {VALID = 0, INVALID_NAN, INVALID_EMPTY_VALUE, INVALID_ZERO, INVALID_RANGE, INVALID_INFINITY};
+enum IndicatorValidationResult {VALID, INVALID_NAN, INVALID_INFINITY, INVALID_EMPTY_VALUE, INVALID_ZERO, INVALID_RANGE};
 enum SimulationErrorCodes {SIMULATION_OK = 0, TIMEOUT = -1, UNEXPECTED_ERROR = -2, INVALID_INPUT = -3, RESOURCE_FAILURE = -4};
 enum OptimizationStatus {OPTIMIZATION_SUCCESS = 1, OPTIMIZATION_FAILED = -1, OPTIMIZATION_UNKNOWN = 0};
 enum GridDistanceError {GRID_SUCCESS = 0, NEGATIVE_DISTANCE = 1, SMALL_DISTANCE = 2, LARGE_DISTANCE = 3};
@@ -813,15 +813,15 @@ void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0
 //------------------------------------------------------------------
 double MarketVolatility(int timeFrame = PERIOD_H1) {
    const int atrPeriod = 50;
-   string symbol = Symbol();
-   if (Bars(symbol, timeFrame) <= atrPeriod) {
-      Print("Error: Insufficient data for ATR calculation on " + symbol);
+   string sym = Symbol();
+   if (Bars(sym, timeFrame) <= atrPeriod) {
+      Print("Error: Insufficient data for ATR calculation on " + sym);
       return -1.0;
    }
    RefreshRates();
    double atr = cachedATR;
    if (atr <= 0) {
-      Print("Error: ATR calculation failed for " + symbol);
+      Print("Error: ATR calculation failed for " + sym);
       return -1.0;
    }
    return atr;
@@ -1498,15 +1498,15 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    double macdSignal = iMACD(symbol, timeframe, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
    double bollingerWidth = upperBand - lowerBand;
 
-   // Apply fallbacks if necessary
-   atrValue = (IsValidIndicatorValue(atrValue) ? atrValue : FALLBACK_ATR);
-   rsiValue = (IsValidIndicatorValue(rsiValue) ? rsiValue : FALLBACK_RSI);
-   fastMAValue = (IsValidIndicatorValue(fastMAValue) ? fastMAValue : FALLBACK_MA);
-   slowMAValue = (IsValidIndicatorValue(slowMAValue) ? slowMAValue : FALLBACK_MA);
-   adxValue = (IsValidIndicatorValue(adxValue) ? adxValue : FALLBACK_ADX);
-   trendStrength = (IsValidIndicatorValue(trendStrength) ? trendStrength : FALLBACK_TREND);
-   macdMain = (IsValidIndicatorValue(macdMain) ? macdMain : 0);
-   macdSignal = (IsValidIndicatorValue(macdSignal) ? macdSignal : 0);
+   // Apply fallbacks if necessary (specifying min and max values)
+   atrValue = (IsValidIndicatorValue(atrValue, 0.0001, 100000) == VALID ? atrValue : FALLBACK_ATR);
+   rsiValue = (IsValidIndicatorValue(rsiValue, 0.0001, 100000) == VALID ? rsiValue : FALLBACK_RSI);
+   fastMAValue = (IsValidIndicatorValue(fastMAValue, 0.0001, 100000) == VALID ? fastMAValue : FALLBACK_MA);
+   slowMAValue = (IsValidIndicatorValue(slowMAValue, 0.0001, 100000) == VALID ? slowMAValue : FALLBACK_MA);
+   localTrendStrength = (IsValidIndicatorValue(localTrendStrength, 0.0001, 100000) == VALID ? localTrendStrength : FALLBACK_TREND);
+   adxValue = (IsValidIndicatorValue(adxValue, 0.0001, 100000) == VALID ? adxValue : FALLBACK_ADX);
+   macdMain = (IsValidIndicatorValue(macdMain, 0.0001, 100000) == VALID ? macdMain : 0);
+   macdSignal = (IsValidIndicatorValue(macdSignal, 0.0001, 100000) == VALID ? macdSignal : 0);
 
    // Update cache
    g_IndicatorCache.atr = atrValue;
@@ -1517,7 +1517,7 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    g_IndicatorCache.upperBand = upperBand;
    g_IndicatorCache.lowerBand = lowerBand;
    g_IndicatorCache.bollingerWidth = bollingerWidth;
-   g_IndicatorCache.trendStrength = trendStrength;
+   g_IndicatorCache.trendStrength = localTrendStrength;
    g_IndicatorCache.macdMain = macdMain;
    g_IndicatorCache.macdSignal = macdSignal;
    g_IndicatorCache.lastUpdate = currentCandleTime;
@@ -1529,7 +1529,7 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
                            " FastMA=" + DoubleToString(fastMAValue,2) +
                            " SlowMA=" + DoubleToString(slowMAValue,2) +
                            " ADX=" + DoubleToString(adxValue,2) +
-                           " Trend=" + DoubleToString(trendStrength,2) +
+                           " Trend=" + DoubleToString(localTrendStrength,2) +
                            " MACD_MAIN=" + DoubleToString(macdMain,2) +
                            " MACD_SIGNAL=" + DoubleToString(macdSignal,2));
    }
@@ -1553,38 +1553,61 @@ void UpdateCachedIndicators(){
    string sym = Symbol();
    int tf = TF;
    
-   cachedATR = iATR(sym, tf, ATRPeriod, 0);
-   cachedRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
-   cachedFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   cachedSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   cachedTrendStrength = CalculateMultiTimeframeTrendStrength();
-   cachedADX = iADX(sym, tf, 14, PRICE_CLOSE, MODE_MAIN, 0);
-   cachedUpperBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
-   cachedLowerBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
-   cachedBollingerWidth = cachedUpperBand - cachedLowerBand;
+   // Retrieve indicator values from MT4 functions
+   double tempATR = iATR(sym, tf, ATRPeriod, 0);
+   double tempRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
+   double tempFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double tempSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double tempADX = iADX(sym, tf, 14, PRICE_CLOSE, MODE_MAIN, 0);
+   double upperBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
+   double lowerBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
+   double tempBollingerWidth = upperBand - lowerBand;
+   
+   // Store MACD values
+   double macdMain = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
+   double macdSignal = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
 
-   // Store MACD main and signal values
-   cachedIndicators[INDICATOR_MACD_MAIN] = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
-   cachedIndicators[INDICATOR_MACD_SIGNAL] = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
+   // Validate and assign global cached values (using fallbacks when needed)
+   cachedATR = GetValidatedIndicator(tempATR, FALLBACK_ATR);
+   cachedRSI = GetValidatedIndicator(tempRSI, FALLBACK_RSI);
+   cachedFastMA = GetValidatedIndicator(tempFastMA, FALLBACK_MA);
+   cachedSlowMA = GetValidatedIndicator(tempSlowMA, FALLBACK_MA);
+   cachedADX = GetValidatedIndicator(tempADX, FALLBACK_ADX);
+   cachedBollingerWidth = tempBollingerWidth; // directly assigned, assumed valid
+   cachedUpperBand = upperBand;
+   cachedLowerBand = lowerBand;
+   cachedIndicators[INDICATOR_MACD_MAIN] = (IsValidIndicatorValue(macdMain)==VALID) ? macdMain : 0;
+   cachedIndicators[INDICATOR_MACD_SIGNAL] = (IsValidIndicatorValue(macdSignal)==VALID) ? macdSignal : 0;
+   
+   // Calculate multi-timeframe trend strength
+   cachedTrendStrength = CalculateMultiTimeframeTrendStrength(sym, FastMAPeriod, SlowMAPeriod);
+   
+   // --- Begin MarketState mismatch check (Option 1) ---
+   // Build a temporary MarketState structure using current values.
+   MarketState currentState;
+   currentState.isVolatile    = (MarketVolatility(tf) > volatilityThreshold);
+   currentState.atr           = cachedATR;
+   currentState.fastMASlope   = CalculateFastMASlopeDummy();
+   currentState.slowMASlope   = CalculateSlowMASlopeDummy();
+   currentState.volatilityScore = CalculateVolatilityScoreDummy();
+   currentState.lastUpdate    = TimeCurrent();
+   
+   // Static cached state (renamed to avoid name collisions)
+   static MarketState cachedMarketState = currentState;
+   
+   // Allow ATR differences up to 5% and check volatile flag equality.
+   double atrTolerance = cachedMarketState.atr * 0.05;
+   bool mismatchDetected = (MathAbs(cachedMarketState.atr - currentState.atr) > atrTolerance) ||
+                           (cachedMarketState.isVolatile != currentState.isVolatile);
+   
+   if(mismatchDetected) {
+      Log("MarketState mismatch detected.", LOG_WARNING);
+   }
+   // Always update the cached market state to current
+   cachedMarketState = currentState;
+   // --- End MarketState mismatch check ---
 
-   // Validate values and apply fallbacks if necessary
-   if(IsValidIndicatorValue(cachedATR) != VALID)
-      cachedATR = FALLBACK_ATR;
-   if(IsValidIndicatorValue(cachedRSI) != VALID)
-      cachedRSI = FALLBACK_RSI;
-   if(IsValidIndicatorValue(cachedFastMA) != VALID)
-      cachedFastMA = FALLBACK_MA;
-   if(IsValidIndicatorValue(cachedSlowMA) != VALID)
-      cachedSlowMA = FALLBACK_MA;
-   if(IsValidIndicatorValue(cachedTrendStrength) != VALID)
-      cachedTrendStrength = FALLBACK_TREND;
-   if(IsValidIndicatorValue(cachedADX) != VALID)
-      cachedADX = FALLBACK_ADX;
-   if(IsValidIndicatorValue(cachedIndicators[INDICATOR_MACD_MAIN]) != VALID)
-      cachedIndicators[INDICATOR_MACD_MAIN] = 0;
-   if(IsValidIndicatorValue(cachedIndicators[INDICATOR_MACD_SIGNAL]) != VALID)
-      cachedIndicators[INDICATOR_MACD_SIGNAL] = 0;
-
+   // Debug logging of updated indicators
    if(debugMode) {
       Log("UpdateCachedIndicators: ATR=" + DoubleToString(cachedATR,6) +
           " RSI=" + DoubleToString(cachedRSI,2) +
@@ -1595,6 +1618,41 @@ void UpdateCachedIndicators(){
           " MACD_MAIN=" + DoubleToString(cachedIndicators[INDICATOR_MACD_MAIN],2) +
           " MACD_SIGNAL=" + DoubleToString(cachedIndicators[INDICATOR_MACD_SIGNAL],2), LOG_INFO);
    }
+}
+
+//------------------------------------------------------------------
+// Helper: Retrieves an indicator value and applies fallback if invalid.
+//------------------------------------------------------------------
+double GetValidatedIndicator(double value, double fallback, const double minVal = 0.0001, const double maxVal = 100000) {
+   if(IsValidIndicatorValue(value) != VALID)
+      return fallback;
+   return value;
+}
+
+// Dummy helper function to calculate the fast MA slope.
+// Replace this with your own implementation if available.
+double CalculateFastMASlopeDummy() {
+   string sym = Symbol();
+   int tf = TF;
+   double currentFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double previousFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 1);
+   return currentFastMA - previousFastMA;
+}
+
+// Dummy helper function to calculate the slow MA slope.
+// Replace this with your own implementation if available.
+double CalculateSlowMASlopeDummy() {
+   string sym = Symbol();
+   int tf = TF;
+   double currentSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double previousSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 1);
+   return currentSlowMA - previousSlowMA;
+}
+
+// Dummy helper function to calculate a volatility score.
+// Replace this with your own implementation if available.
+double CalculateVolatilityScoreDummy() {
+   return cachedBollingerWidth;
 }
 
 double ValidateAndFallbackBands(double bandValue, string indicatorName) {
@@ -1945,14 +2003,14 @@ double CalculateMultiTimeframeTrendStrength(string symbol = "", int fastMAPeriod
    const int timeframes[] = { PERIOD_M15, PERIOD_H1, PERIOD_H4 };
    double weights[] = { 0.3, 0.4, 0.3 };
 
-   // Normalize weights if needed
+   // Normalize weights if necessary
    double weightSum = 0.0;
    int weightCount = ArraySize(weights);
    for(int i = 0; i < weightCount; i++)
       weightSum += weights[i];
 
    if(MathAbs(weightSum - 1.0) > 0.00001) {
-      for(int j = 0; j < weightCount; j++)  // renamed loop variable to j
+      for(int j = 0; j < weightCount; j++)
          weights[j] /= weightSum;
    }
    
