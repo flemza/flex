@@ -2733,6 +2733,11 @@ TradingStrategy EnhancedStrategySelection(){
       Log("EnhancedStrategySelection: Conditions favor MeanReversion (Overbought).", LOG_INFO);
       return MeanReversion;
    }
+   // New condition: If RSI is moderate and trend strength is weak, favor CounterTrend.
+   else if(localRSI >= 30 && localRSI <= 50 && localTrendStrength < 40) {
+      Log("EnhancedStrategySelection: Conditions favor CounterTrend.", LOG_INFO);
+      return CounterTrend;
+   }
    else   {
       Log("EnhancedStrategySelection: Conditions inconclusive; defaulting to TrendFollowing.", LOG_INFO);
       return TrendFollowing;
@@ -5208,6 +5213,14 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
          sl = CalculateStopLoss(RiskLow);
          tp = CalculateTakeProfit(RiskLow);
          lotSize = CalculatePositionSize(RiskLow, sl);
+         break;
+      case CounterTrend:
+         // New implementation for CounterTrend strategy (enum value 4)
+         Log("ExecuteStrategy: Processing CounterTrend strategy.", LOG_INFO);
+         // For CounterTrend, you might use a medium risk setup; adjust if needed.
+         sl = CalculateStopLoss(RiskMedium);
+         tp = CalculateTakeProfit(RiskMedium);
+         lotSize = CalculatePositionSize(RiskMedium, sl);
          break;
       // Extend with additional strategies as needed
       default:
