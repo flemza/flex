@@ -574,21 +574,21 @@ void AdjustRiskParametersForRetry(int maxDrawdown = 10){
 // Set the risk level and adjust position size, stop loss, and take profit
 //------------------------------------------------------------------
 void SetRiskLevel(RiskLevelType riskLevel){
-   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
+   if(riskLevel < RiskLow || riskLevel > RiskHigh) {
       Log("SetRiskLevel: Invalid risk level.", LOG_ERROR);
       return;
    }
    
    const double riskPercentage = 0.02; // Risk percentage per trade; can be made adaptive
    double calculatedSL = CalculateStopLoss(riskLevel);
-   if(calculatedSL < 0)   {
+   if(calculatedSL < 0) {
       Log("SetRiskLevel: Calculated stop loss is invalid.", LOG_ERROR);
       return;
    }
    
-   // Calculate position size based on stop loss and risk percentage
-   double positionSize = CalculatePositionSize(calculatedSL, riskPercentage);
-   if(positionSize <= 0)   {
+   // Calculate position size using the risk level and calculated stop loss (stop loss in points)
+   double positionSize = CalculatePositionSize(riskLevel, calculatedSL);
+   if(positionSize <= 0) {
       Log("SetRiskLevel: Invalid position size.", LOG_ERROR);
       return;
    }
@@ -626,61 +626,35 @@ string RiskLevelToString(RiskLevelType level){
 //+------------------------------------------------------------------+
 //| Calculate Stop Loss based on ATR and risk level                  |
 //+------------------------------------------------------------------+
-double CalculateStopLoss(int riskLevel) {
-    // Validate risk level input
-    if(riskLevel < RiskLow || riskLevel > RiskHigh) {
-       Log("CalculateStopLoss: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-       return MAX_SL; // Return a safe maximum value
-    }
-    
-    // Calculate ATR-based stop loss
-    double atrValue = iATR(NULL, 0, ATRPeriod, 0);
-    if(atrValue <= 0) {
-       Log("CalculateStopLoss: Invalid ATR value: " + DoubleToString(atrValue, 2) + ". Using fallback.", LOG_WARNING);
-       atrValue = FALLBACK_ATR;
-    }
-    
-    // Determine stop loss multiplier based on risk level
-    double slMultiplier = 1.0;
-    if(riskLevel == RiskLow)
-       slMultiplier = 1.5;
-    else if(riskLevel == RiskMedium)
-       slMultiplier = 1.0;
-    else if(riskLevel == RiskHigh)
-       slMultiplier = 0.75;
-    
-    double calculatedSL = atrValue * slMultiplier;
-    return calculatedSL;
+double CalculateStopLoss(RiskLevelType risk) {
+   // Base stop-loss values (in points) by risk level
+   double baseSL = 50; // default for medium risk
+   if(risk == RiskLow)
+      baseSL = 30;
+   else if(risk == RiskHigh)
+      baseSL = 70;
+   
+   // Widen stop-loss proportionally to volatility
+   double volFactor = (cachedATR > 0 ? cachedATR / FALLBACK_ATR : 1.0);
+   double adjustedSL = baseSL * volFactor;
+   return NormalizeDouble(adjustedSL, 2);
 }
 
 //+------------------------------------------------------------------+
 //| Calculate Take Profit based on ATR, with dynamic adjustments     |
 //+------------------------------------------------------------------+
-double CalculateTakeProfit(int riskLevel){
-   // Validate riskLevel input
-   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
-      Log("CalculateTakeProfit: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-      return MAX_TP; // Default maximum take profit
-   }
+double CalculateTakeProfit(RiskLevelType risk) {
+   // Base take-profit values (in points) by risk level
+   double baseTP = 100; // default for medium risk
+   if(risk == RiskLow)
+      baseTP = 60;
+   else if(risk == RiskHigh)
+      baseTP = 140;
    
-   // Define risk-to-reward ratios based on risk level
-   double rrRatio = 2.0; // Default ratio
-   switch(riskLevel)   {
-      case RiskLow:
-         rrRatio = 1.5;
-         break;
-      case RiskMedium:
-         rrRatio = 2.0;
-         break;
-      case RiskHigh:
-         rrRatio = 2.5;
-         break;
-   }
-   
-   double stopLoss = CalculateStopLoss(RiskMedium);
-   double takeProfit = stopLoss * rrRatio;
-   takeProfit = MathMin(takeProfit, MAX_TP);
-   return takeProfit;
+   // Widen take-profit based on volatility
+   double volFactor = (cachedATR > 0 ? cachedATR / FALLBACK_ATR : 1.0);
+   double adjustedTP = baseTP * volFactor;
+   return NormalizeDouble(adjustedTP, 2);
 }
 
 //+------------------------------------------------------------------+
@@ -751,27 +725,38 @@ bool SetStopLossTakeProfit(double stopLoss, double takeProfit) {
 //+------------------------------------------------------------------+
 //| Calculate position size using risk percentage, dynamic volatility adjustment, and margin requirements        |
 //+------------------------------------------------------------------+
-double CalculatePositionSize(int riskLevel, double stopLoss){
-   // Validate input parameters
-   if(riskLevel < RiskLow || riskLevel > RiskHigh)   {
-      Log("CalculatePositionSize: Invalid risk level: " + IntegerToString(riskLevel), LOG_ERROR);
-      return 0.0;
-   }
-   if(stopLoss <= 0)   {
-      Log("CalculatePositionSize: Invalid stop loss value: " + DoubleToString(stopLoss,2), LOG_ERROR);
-      return 0.0;
-   }
+double CalculatePositionSize(RiskLevelType risk, double stopLossInPoints) {
+   // Base risk percentages by risk level (can be optimized via backtesting)
+   double baseRiskPercentage = 0.02; // default for medium risk
+   if(risk == RiskLow)
+      baseRiskPercentage = 0.01;
+   else if(risk == RiskHigh)
+      baseRiskPercentage = 0.03;
    
-   // Set risk percentage based on risk level
-   double riskPercentage = (riskLevel == RiskLow) ? 0.01 : (riskLevel == RiskMedium) ? 0.02 : 0.03;
-   double riskAmount = AccountEquity() * riskPercentage;
+   // Adjust risk percentage if drawdown is high (reduce risk further)
+   double drawdown = CalculateDrawdownPercentage(); // assumes this function exists
+   if(drawdown > 0.10)  // e.g., more than 10% drawdown
+      baseRiskPercentage *= 0.8; // reduce risk by 20%
    
-   // Calculate lot size based on risk amount and stop loss in points
-   double lotSize = riskAmount / (stopLoss * Point);
+   // Incorporate market volatility: if current ATR is higher than a baseline, reduce risk
+   double volFactor = (cachedATR > 0 ? cachedATR / FALLBACK_ATR : 1.0);
+   if(volFactor > 1.0)
+      baseRiskPercentage *= 0.9;  // reduce risk by 10% when volatility is high
+
+   // Calculate the monetary risk (riskAmount) per trade
+   double riskAmount = AccountEquity() * baseRiskPercentage;
+   
+   // Calculate lot size: riskAmount divided by (stop loss in points * tick value)
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   if(tickValue <= 0)
+      tickValue = 1.0;
+   double lotSize = riskAmount / (stopLossInPoints * tickValue);
+   
+   // Normalize lot size (2 decimal places) and check against maximum allowed
    lotSize = NormalizeDouble(lotSize, 2);
-   
-   // Ensure lot size does not exceed maximum allowed
-   lotSize = MathMin(lotSize, MaxAllowedLotSize);
+   double maxAllowedLot = MaxAllowedLotSize; // defined as an input
+   if(lotSize > maxAllowedLot)
+      lotSize = maxAllowedLot;
    return lotSize;
 }
 
@@ -1549,7 +1534,15 @@ double SmoothValue(double currentValue, double previousSmoothed, double smoothin
 }
 
 //------------------------------------------------------------------
-// Updates cached indicators with adaptive periods and a relaxed MarketState check
+// SmoothEMA: Applies an exponential moving average filter.
+// alpha: smoothing factor (0 < alpha < 1); lower = smoother
+//------------------------------------------------------------------
+double SmoothEMA(double currentValue, double previousEMA, double alpha = 0.2) {
+   return (alpha * currentValue) + ((1.0 - alpha) * previousEMA);
+}
+
+//------------------------------------------------------------------
+// Updates cached indicators with adaptive periods, including EMA smoothing
 //------------------------------------------------------------------
 void UpdateCachedIndicators(){
    datetime currentBarTime = Time[0];
@@ -1560,7 +1553,7 @@ void UpdateCachedIndicators(){
    string sym = Symbol();
    int tf = TF;
    
-   // Retrieve raw indicator values from MT4 functions
+   // Retrieve raw indicator values
    double rawATR = iATR(sym, tf, ATRPeriod, 0);
    double rawRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
    double rawFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
@@ -1572,11 +1565,22 @@ void UpdateCachedIndicators(){
    double macdMain = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
    double macdSignal = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
    
-   // Validate raw indicator values and apply fallback if needed
+   // Validate and apply fallbacks
    cachedATR = (IsValidIndicatorValue(rawATR) == VALID ? rawATR : FALLBACK_ATR);
-   cachedRSI = (IsValidIndicatorValue(rawRSI) == VALID ? rawRSI : FALLBACK_RSI);
+   // Apply EMA smoothing to RSI. Use a static variable to hold the previous EMA.
+   static double smoothedRSI = (IsValidIndicatorValue(rawRSI)==VALID ? rawRSI : FALLBACK_RSI);
+   smoothedRSI = SmoothEMA(rawRSI, smoothedRSI, 0.2);
+   cachedRSI = smoothedRSI;
+   
    cachedFastMA = (IsValidIndicatorValue(rawFastMA) == VALID ? rawFastMA : FALLBACK_MA);
    cachedSlowMA = (IsValidIndicatorValue(rawSlowMA) == VALID ? rawSlowMA : FALLBACK_MA);
+   
+   // Calculate multi-timeframe trend strength and apply EMA smoothing
+   double rawTrendStrength = CalculateMultiTimeframeTrendStrength(sym, FastMAPeriod, SlowMAPeriod);
+   static double smoothedTrend = rawTrendStrength;
+   smoothedTrend = SmoothEMA(rawTrendStrength, smoothedTrend, 0.2);
+   cachedTrendStrength = smoothedTrend;
+   
    cachedADX = (IsValidIndicatorValue(rawADX) == VALID ? rawADX : FALLBACK_ADX);
    cachedBollingerWidth = bollingerWidth;
    cachedUpperBand = upperBand;
@@ -1584,35 +1588,25 @@ void UpdateCachedIndicators(){
    cachedIndicators[INDICATOR_MACD_MAIN] = (IsValidIndicatorValue(macdMain)==VALID ? macdMain : 0);
    cachedIndicators[INDICATOR_MACD_SIGNAL] = (IsValidIndicatorValue(macdSignal)==VALID ? macdSignal : 0);
 
-   // Calculate multi-timeframe trend strength and smooth it slightly
-   double rawTrendStrength = CalculateMultiTimeframeTrendStrength(sym, FastMAPeriod, SlowMAPeriod);
-   cachedTrendStrength = SmoothValue(rawTrendStrength, cachedTrendStrength);
-   
-   // --- Begin MarketState mismatch check (relaxed tolerance) ---
+   // MarketState mismatch check (as before; using our adjusted version)
    MarketState currentState;
    currentState.isVolatile    = (MarketVolatility(tf) > volatilityThreshold);
    currentState.atr           = cachedATR;
-   currentState.fastMASlope   = CalculateFastMASlopeDummy();
-   currentState.slowMASlope   = CalculateSlowMASlopeDummy();
-   currentState.volatilityScore = CalculateVolatilityScoreDummy();
+   currentState.fastMASlope   = CalculateFastMASlope();
+   currentState.slowMASlope   = CalculateSlowMASlope();
+   currentState.volatilityScore = CalculateVolatilityScore();
    currentState.lastUpdate    = TimeCurrent();
-   
-   // Use a static variable to hold the previous market state
    static MarketState cachedMarketState = currentState;
-   
-   // Define tolerances – allowing up to 5% difference in ATR and 10% in volatility score
    double atrTolerance = cachedMarketState.atr * 0.05;
    double volTolerance = cachedMarketState.volatilityScore * 0.10;
    bool mismatchDetected = (MathAbs(cachedMarketState.atr - currentState.atr) > atrTolerance) ||
                            (MathAbs(cachedMarketState.volatilityScore - currentState.volatilityScore) > volTolerance) ||
                            (cachedMarketState.isVolatile != currentState.isVolatile);
-   
    if(mismatchDetected) {
       Log("MarketState mismatch detected.", LOG_WARNING);
    }
    cachedMarketState = currentState;
-   // --- End MarketState mismatch check ---
-
+   
    // Debug logging
    if(debugMode) {
       Log("UpdateCachedIndicators: ATR=" + DoubleToString(cachedATR,6) +
@@ -1635,30 +1629,61 @@ double GetValidatedIndicator(double value, double fallback, const double minVal 
    return value;
 }
 
-// Dummy helper function to calculate the fast MA slope.
-// Replace this with your own implementation if available.
-double CalculateFastMASlopeDummy() {
+//------------------------------------------------------------------
+// Calculate the slope of the fast moving average using EMA smoothing
+//------------------------------------------------------------------
+double CalculateFastMASlope() {
    string sym = Symbol();
    int tf = TF;
-   double currentFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   double previousFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 1);
-   return currentFastMA - previousFastMA;
+   
+   // Get the EMA instead of SMA for smoother trend detection
+   double currentFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double previousFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double olderFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_EMA, PRICE_CLOSE, 2);
+   
+   // Use a more refined slope calculation
+   double slope = ((currentFastMA - previousFastMA) + (previousFastMA - olderFastMA)) / 2;
+   
+   return NormalizeDouble(slope, 5);
 }
 
-// Dummy helper function to calculate the slow MA slope.
-// Replace this with your own implementation if available.
-double CalculateSlowMASlopeDummy() {
+//------------------------------------------------------------------
+// Calculate the slope of the slow moving average using EMA smoothing
+//------------------------------------------------------------------
+double CalculateSlowMASlope() {
    string sym = Symbol();
    int tf = TF;
-   double currentSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   double previousSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 1);
-   return currentSlowMA - previousSlowMA;
+   
+   // Get the EMA instead of SMA for smoother trend detection
+   double currentSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double previousSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double olderSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_EMA, PRICE_CLOSE, 2);
+   
+   // Use a more refined slope calculation
+   double slope = ((currentSlowMA - previousSlowMA) + (previousSlowMA - olderSlowMA)) / 2;
+   
+   return NormalizeDouble(slope, 5);
 }
 
-// Dummy helper function to calculate a volatility score.
-// Replace this with your own implementation if available.
-double CalculateVolatilityScoreDummy() {
-   return cachedBollingerWidth;
+//------------------------------------------------------------------
+// Calculate volatility score using ATR and Bollinger Band width
+//------------------------------------------------------------------
+double CalculateVolatilityScore() {
+   string sym = Symbol();
+   int tf = TF;
+   
+   // Bollinger Band width (existing approach)
+   double upperBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
+   double lowerBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
+   double bollingerWidth = upperBand - lowerBand;
+
+   // ATR (more reliable volatility indicator)
+   double atrValue = iATR(sym, tf, ATRPeriod, 0);
+   
+   // Weighted combination of ATR and Bollinger width for a more refined score
+   double volatilityScore = (0.6 * atrValue) + (0.4 * bollingerWidth);
+   
+   return NormalizeDouble(volatilityScore, 5);
 }
 
 double ValidateAndFallbackBands(double bandValue, string indicatorName) {
@@ -2773,34 +2798,60 @@ TradingStrategy EnhancedStrategySelection(){
       return TrendFollowing;
    }
    
-   // Use locally cached, smoothed indicator values
    double localTrendStrength = cachedTrendStrength;
    double localRSI = cachedRSI;
    double localADX = cachedADX;
    double macdHistogram = cachedIndicators[INDICATOR_MACD_MAIN] - cachedIndicators[INDICATOR_MACD_SIGNAL];
-
+   double spread = MarketInfo(Symbol(), MODE_SPREAD);
+   double volume = MarketVolume(); // now defined
+   double overallVol = MarketVolatility(PERIOD_H1);
+   
    Log("EnhancedStrategySelection: Trend=" + DoubleToString(localTrendStrength,2) +
        " RSI=" + DoubleToString(localRSI,2) +
        " ADX=" + DoubleToString(localADX,2) +
-       " MACDHist=" + DoubleToString(macdHistogram,2), LOG_INFO);
-
-   // Example selection logic:
-   // Favor TrendFollowing if strong trend and ADX are high
-   if(localADX >= 25 && localTrendStrength > 0.05 && macdHistogram > 0.0) {
+       " MACDHist=" + DoubleToString(macdHistogram,2) +
+       " Spread=" + DoubleToString(spread,2) +
+       " Volume=" + DoubleToString(volume,2) +
+       " Vol=" + DoubleToString(overallVol,2), LOG_INFO);
+   
+   // (Your strategy selection logic continues...)
+   if(localADX >= 25 && localTrendStrength > 0.05 && macdHistogram > 0.0 && spread < 10) {
       return TrendFollowing;
    }
-   // Favor MeanReversion when RSI indicates extreme conditions
    else if(localRSI < 30 || localRSI > 70) {
       return MeanReversion;
    }
-   // Favor CounterTrend if trend is weak but conditions are oscillatory
    else if(localTrendStrength < 0.02 && MathAbs(macdHistogram) > 0.05) {
       return CounterTrend;
    }
-   // Fallback to Scalping in moderate conditions
-   else {
+   else if(overallVol > 2.0 && localRSI > 40 && localRSI < 60) {
       return Scalping;
    }
+   else {
+      return TrendFollowing;
+   }
+}
+
+//------------------------------------------------------------------
+// MarketVolume: Returns the average tick volume over a specified
+// number of recent bars for the current symbol and timeframe.
+//------------------------------------------------------------------
+double MarketVolume() {
+   string sym = Symbol();
+   int tf = PERIOD_H1;  // You can change this to a different timeframe if desired.
+   int barsToAverage = 10;  // Number of bars to average volume over.
+   double volSum = 0.0;
+   
+   int totalBars = Bars(sym, tf);
+   if(totalBars < barsToAverage)
+      barsToAverage = totalBars;  // Use available bars if fewer than desired.
+   
+   for(int i = 0; i < barsToAverage; i++) {
+      volSum += iVolume(sym, tf, i);
+   }
+   
+   double avgVolume = (barsToAverage > 0) ? volSum / barsToAverage : 0;
+   return avgVolume;
 }
 
 bool CheckStrategyValidity(){
@@ -5248,20 +5299,17 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 }
 
 //------------------------------------------------------------------
-// Execute Trading Strategy with calculated parameters and dynamic risk management.
+// Execute Trading Strategy with dynamic risk management and order retry
 //------------------------------------------------------------------
 bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment){
-   if(equity <= 0 || drawdown < 0)   {
+   if(equity <= 0 || drawdown < 0) {
       Log("ExecuteStrategy: Invalid equity or drawdown.", LOG_ERROR);
       return false;
    }
    
    double lotSize = 0.0, sl = 0.0, tp = 0.0;
-   
-   // Dynamically adjust risk based on drawdown and recent performance.
-   // (You can further refine these calculations based on your backtesting results.)
    RiskLevelType riskLevel = (drawdown > 0.2 * equity) ? RiskLow : RiskMedium;
-
+   
    switch(strategy) {
       case TrendFollowing:
          sl = CalculateStopLoss(riskLevel);
@@ -5290,7 +5338,7 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
          return false;
    }
    
-   if(lotSize <= 0 || sl <= 0 || tp <= 0)   {
+   if(lotSize <= 0 || sl <= 0 || tp <= 0) {
       Log("ExecuteStrategy: Computed invalid parameters. LotSize=" + DoubleToString(lotSize,2) +
           " SL=" + DoubleToString(sl,2) +
           " TP=" + DoubleToString(tp,2), LOG_ERROR);
@@ -5299,7 +5347,6 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
    
    int orderType = (marketSentiment >= 0.5) ? OP_BUY : OP_SELL;
    double price = (orderType == OP_BUY) ? Ask : Bid;
-   
    if((orderType == OP_BUY && (sl >= price || tp <= price)) ||
       (orderType == OP_SELL && (sl <= price || tp >= price))) {
       Log("ExecuteStrategy: Price conditions invalid. Price=" + DoubleToString(price, Digits()), LOG_ERROR);
@@ -5307,10 +5354,19 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
    }
    
    int slippage = Slippage;
-   int ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
-   if(ticket < 0) {
+   int ticket = -1;
+   int maxRetries = 3;
+   for(int attempt = 0; attempt < maxRetries; attempt++) {
+      ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
+      if(ticket >= 0) break;
       int errorCode = GetLastError();
-      Log("ExecuteStrategy: OrderSend failed. Error: " + IntegerToString(errorCode), LOG_ERROR);
+      Log("ExecuteStrategy: OrderSend attempt " + IntegerToString(attempt+1) + " failed. Error: " + IntegerToString(errorCode), LOG_WARNING);
+      Sleep(500); // Wait before retrying
+      // Optionally, adjust slippage dynamically for the next attempt
+      slippage += 1;
+   }
+   if(ticket < 0) {
+      Log("ExecuteStrategy: All order send attempts failed.", LOG_ERROR);
       return false;
    }
    
