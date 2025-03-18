@@ -323,15 +323,18 @@ void OnTick(){
       return;
    }
    
-   // Calculate dynamic lot size for new orders
-   double lotSize = CalculateDynamicLotSize();
+   // Calculate current market parameters
    double equity = AccountEquity();
    double drawdown = CalculateDrawdownPercentage();
    double sentiment = CalculateMarketSentiment();
-   // Proceed to execute strategy (your ExecuteStrategy() function may need to accept lotSize)
+   
+   // Attempt to execute the selected strategy
    if(!ExecuteStrategy(strategy, equity, drawdown, sentiment))   {
       int error = GetLastError();
-      EnhancedLogError("Execution error for strategy " + StrategyToString(strategy), error, Symbol());
+      if(error != 0)
+         EnhancedLogError("Execution error for strategy " + StrategyToString(strategy), error, Symbol());
+      else
+         Log("ExecuteStrategy returned false for strategy " + StrategyToString(strategy) + " with error code 0. Check internal conditions.", LOG_WARNING);
       return;
    }
    
@@ -423,25 +426,26 @@ TradingStrategy SelectCombinedStrategy(){
 // Returns a trend following signal (-1 to +1) based on dual EMAs.
 // A positive value indicates bullish conditions; a negative value indicates bearish.
 double GetTrendFollowingSignal(){
-   // Fast and slow EMA periods (configurable as needed)
    int fastPeriod = 20;
    int slowPeriod = 50;
-   
-   // Retrieve the fast and slow EMAs
    double fastEMA = iMA(Symbol(), Timeframe, fastPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
    double slowEMA = iMA(Symbol(), Timeframe, slowPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
-   
-   // Calculate the difference and normalize by current price
    double diff = fastEMA - slowEMA;
    double normDiff = diff / Bid;
-   
-   // Define a threshold (e.g., 0.1% of current price) to filter noise
    double threshold = 0.001;
+   
+   double signal = 0.0;
    if(normDiff > threshold)
-      return 1.0;
+      signal = 1.0;
    else if(normDiff < -threshold)
-      return -1.0;
-   return 0.0;
+      signal = -1.0;
+   
+   Log("GetTrendFollowingSignal: fastEMA=" + DoubleToString(fastEMA,2) +
+       ", slowEMA=" + DoubleToString(slowEMA,2) +
+       ", normDiff=" + DoubleToString(normDiff,4) +
+       ", signal=" + DoubleToString(signal,1), LOG_DEBUG);
+   
+   return signal;
 }
 
 // Returns a mean reversion signal (-1 to +1).
@@ -833,16 +837,20 @@ string RiskLevelToString(RiskLevelType level){
 //| Calculate Stop Loss based on ATR and risk level                  |
 //+------------------------------------------------------------------+
 double CalculateStopLoss(RiskLevelType risk) {
-   // Base stop-loss values (in points) by risk level
-   double baseSL = 50; // default for medium risk
-   if(risk == RiskLow)
-      baseSL = 30;
-   else if(risk == RiskHigh)
-      baseSL = 70;
-   
-   // Widen stop-loss proportionally to volatility
+   double baseSL = 50; // Default for medium risk
+   if (risk == RiskLow) baseSL = 30;
+   else if (risk == RiskHigh) baseSL = 70;
+
    double volFactor = (cachedATR > 0 ? cachedATR / FALLBACK_ATR : 1.0);
    double adjustedSL = baseSL * volFactor;
+
+   // Ensure SL is at least a minimum threshold to avoid being too close to price
+   adjustedSL = MathMax(adjustedSL, 5 * Point);
+
+   Log("CalculateStopLoss: RiskLevel=" + RiskLevelToString(risk) + 
+       ", BaseSL=" + DoubleToString(baseSL,2) + 
+       ", AdjustedSL=" + DoubleToString(adjustedSL,2), LOG_DEBUG);
+   
    return NormalizeDouble(adjustedSL, 2);
 }
 
@@ -850,16 +858,20 @@ double CalculateStopLoss(RiskLevelType risk) {
 //| Calculate Take Profit based on ATR, with dynamic adjustments     |
 //+------------------------------------------------------------------+
 double CalculateTakeProfit(RiskLevelType risk) {
-   // Base take-profit values (in points) by risk level
-   double baseTP = 100; // default for medium risk
-   if(risk == RiskLow)
-      baseTP = 60;
-   else if(risk == RiskHigh)
-      baseTP = 140;
-   
-   // Widen take-profit based on volatility
+   double baseTP = 100; // Default for medium risk
+   if (risk == RiskLow) baseTP = 60;
+   else if (risk == RiskHigh) baseTP = 140;
+
    double volFactor = (cachedATR > 0 ? cachedATR / FALLBACK_ATR : 1.0);
    double adjustedTP = baseTP * volFactor;
+
+   // Ensure TP is at least a minimum threshold
+   adjustedTP = MathMax(adjustedTP, 10 * Point);
+
+   Log("CalculateTakeProfit: RiskLevel=" + RiskLevelToString(risk) + 
+       ", BaseTP=" + DoubleToString(baseTP,2) + 
+       ", AdjustedTP=" + DoubleToString(adjustedTP,2), LOG_DEBUG);
+
    return NormalizeDouble(adjustedTP, 2);
 }
 
@@ -5507,75 +5519,94 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 //------------------------------------------------------------------
 // Execute Trading Strategy with dynamic risk management and order retry
 //------------------------------------------------------------------
-bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment){
-   if(equity <= 0 || drawdown < 0) {
+bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment) {
+   // Log input parameters for debugging
+   Log("ExecuteStrategy: Received parameters: equity=" + DoubleToString(equity,2) +
+       ", drawdown=" + DoubleToString(drawdown,2) +
+       ", marketSentiment=" + DoubleToString(marketSentiment,2), LOG_DEBUG);
+
+   if (equity <= 0 || drawdown < 0) {
       Log("ExecuteStrategy: Invalid equity or drawdown.", LOG_ERROR);
       return false;
    }
    
    double lotSize = 0.0, sl = 0.0, tp = 0.0;
    RiskLevelType riskLevel = (drawdown > 0.2 * equity) ? RiskLow : RiskMedium;
+   Log("ExecuteStrategy: Calculated risk level: " + RiskLevelToString(riskLevel), LOG_DEBUG);
    
-   switch(strategy) {
+   switch (strategy) {
       case TrendFollowing:
-         sl = CalculateStopLoss(riskLevel);
-         tp = CalculateTakeProfit(riskLevel);
-         lotSize = CalculatePositionSize(riskLevel, sl);
+         Log("ExecuteStrategy: Processing TrendFollowing.", LOG_INFO);
          break;
       case Scalping:
-         sl = CalculateStopLoss(RiskLow);
-         tp = CalculateTakeProfit(RiskLow);
-         lotSize = CalculatePositionSize(RiskLow, sl);
+         Log("ExecuteStrategy: Processing Scalping.", LOG_INFO);
+         riskLevel = RiskLow;
          break;
       case CounterTrend:
          Log("ExecuteStrategy: Processing CounterTrend.", LOG_INFO);
-         sl = CalculateStopLoss(riskLevel);
-         tp = CalculateTakeProfit(riskLevel);
-         lotSize = CalculatePositionSize(riskLevel, sl);
          break;
       case MeanReversion:
          Log("ExecuteStrategy: Processing MeanReversion.", LOG_INFO);
-         sl = CalculateStopLoss(RiskMedium);
-         tp = CalculateTakeProfit(RiskMedium);
-         lotSize = CalculatePositionSize(RiskMedium, sl);
+         riskLevel = RiskMedium;
          break;
       default:
          Log("ExecuteStrategy: Unsupported strategy " + IntegerToString(strategy), LOG_ERROR);
          return false;
    }
-   
-   if(lotSize <= 0 || sl <= 0 || tp <= 0) {
-      Log("ExecuteStrategy: Computed invalid parameters. LotSize=" + DoubleToString(lotSize,2) +
-          " SL=" + DoubleToString(sl,2) +
-          " TP=" + DoubleToString(tp,2), LOG_ERROR);
+
+   sl = CalculateStopLoss(riskLevel);
+   tp = CalculateTakeProfit(riskLevel);
+   lotSize = CalculatePositionSize(riskLevel, sl);
+
+   // Validate computed parameters
+   Log("ExecuteStrategy: Computed parameters: LotSize=" + DoubleToString(lotSize,2) +
+       " SL=" + DoubleToString(sl,2) +
+       " TP=" + DoubleToString(tp,2), LOG_DEBUG);
+
+   if (lotSize <= 0 || sl <= 0 || tp <= 0) {
+      Log("ExecuteStrategy: Computed invalid parameters.", LOG_ERROR);
       return false;
    }
-   
+
    int orderType = (marketSentiment >= 0.5) ? OP_BUY : OP_SELL;
    double price = (orderType == OP_BUY) ? Ask : Bid;
-   if((orderType == OP_BUY && (sl >= price || tp <= price)) ||
-      (orderType == OP_SELL && (sl <= price || tp >= price))) {
-      Log("ExecuteStrategy: Price conditions invalid. Price=" + DoubleToString(price, Digits()), LOG_ERROR);
+
+   // Ensure SL/TP are properly positioned relative to price
+   if (orderType == OP_BUY) {
+      if (sl >= price) sl = price - (10 * Point);
+      if (tp <= price) tp = price + (20 * Point);
+   } else { // OP_SELL
+      if (sl <= price) sl = price + (10 * Point);
+      if (tp >= price) tp = price - (20 * Point);
+   }
+
+   // Final validation of SL/TP
+   if ((orderType == OP_BUY && (sl >= price || tp <= price)) ||
+       (orderType == OP_SELL && (sl <= price || tp >= price))) {
+      Log("ExecuteStrategy: Price conditions invalid. OrderType=" + ((orderType == OP_BUY) ? "BUY" : "SELL") +
+          ", Price=" + DoubleToString(price, Digits()) +
+          ", SL=" + DoubleToString(sl, Digits()) +
+          ", TP=" + DoubleToString(tp, Digits()), LOG_ERROR);
       return false;
    }
-   
+
    int slippage = Slippage;
    int ticket = -1;
    int maxRetries = 3;
-   for(int attempt = 0; attempt < maxRetries; attempt++) {
+   for (int attempt = 0; attempt < maxRetries; attempt++) {
       ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
-      if(ticket >= 0) break;
+      if (ticket >= 0) break;
       int errorCode = GetLastError();
-      Log("ExecuteStrategy: OrderSend attempt " + IntegerToString(attempt+1) + " failed. Error: " + IntegerToString(errorCode), LOG_WARNING);
+      Log("ExecuteStrategy: OrderSend attempt " + IntegerToString(attempt+1) +
+          " failed. Error: " + IntegerToString(errorCode), LOG_WARNING);
       Sleep(500); // Wait before retrying
-      // Optionally, adjust slippage dynamically for the next attempt
-      slippage += 1;
+      slippage += 1; // Optionally adjust slippage for next attempt
    }
-   if(ticket < 0) {
+   if (ticket < 0) {
       Log("ExecuteStrategy: All order send attempts failed.", LOG_ERROR);
       return false;
    }
-   
+
    Log("ExecuteStrategy: Order executed successfully. Ticket: " + IntegerToString(ticket) +
        " Type: " + ((orderType == OP_BUY) ? "Buy" : "Sell") +
        " LotSize: " + DoubleToString(lotSize,2), LOG_INFO);
