@@ -5217,7 +5217,7 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
       case CounterTrend:
          // New implementation for CounterTrend strategy (enum value 4)
          Log("ExecuteStrategy: Processing CounterTrend strategy.", LOG_INFO);
-         // For CounterTrend, you might use a medium risk setup; adjust if needed.
+         // For CounterTrend, we use a medium risk configuration (adjust as needed)
          sl = CalculateStopLoss(RiskMedium);
          tp = CalculateTakeProfit(RiskMedium);
          lotSize = CalculatePositionSize(RiskMedium, sl);
@@ -5253,7 +5253,7 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
    if(ticket < 0)   {
       int errorCode = GetLastError();
       Log("ExecuteStrategy: OrderSend failed. Error: " + IntegerToString(errorCode), LOG_ERROR);
-      ResetLastError();
+      // Removed ResetLastError() to preserve errorCode for later use.
       return false;
    }
    
