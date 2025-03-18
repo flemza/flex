@@ -1542,7 +1542,14 @@ double GetCachedFastMA(){ return g_IndicatorCache.fastMA; }
 double GetCachedSlowMA(){ return g_IndicatorCache.slowMA; }
 
 //------------------------------------------------------------------
-// Updates cached indicators with adaptive periods
+// SmoothValue: Applies a simple moving average smoothing filter
+//------------------------------------------------------------------
+double SmoothValue(double currentValue, double previousSmoothed, double smoothingFactor = 0.2) {
+   return (smoothingFactor * currentValue) + ((1 - smoothingFactor) * previousSmoothed);
+}
+
+//------------------------------------------------------------------
+// Updates cached indicators with adaptive periods and a relaxed MarketState check
 //------------------------------------------------------------------
 void UpdateCachedIndicators(){
    datetime currentBarTime = Time[0];
@@ -1553,37 +1560,35 @@ void UpdateCachedIndicators(){
    string sym = Symbol();
    int tf = TF;
    
-   // Retrieve indicator values from MT4 functions
-   double tempATR = iATR(sym, tf, ATRPeriod, 0);
-   double tempRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
-   double tempFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   double tempSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
-   double tempADX = iADX(sym, tf, 14, PRICE_CLOSE, MODE_MAIN, 0);
+   // Retrieve raw indicator values from MT4 functions
+   double rawATR = iATR(sym, tf, ATRPeriod, 0);
+   double rawRSI = iRSI(sym, tf, RSIPeriod, PRICE_CLOSE, 0);
+   double rawFastMA = iMA(sym, tf, FastMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double rawSlowMA = iMA(sym, tf, SlowMAPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double rawADX = iADX(sym, tf, 14, PRICE_CLOSE, MODE_MAIN, 0);
    double upperBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
    double lowerBand = iBands(sym, tf, BollingerPeriod, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
-   double tempBollingerWidth = upperBand - lowerBand;
-   
-   // Store MACD values
+   double bollingerWidth = upperBand - lowerBand;
    double macdMain = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
    double macdSignal = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
-
-   // Validate and assign global cached values (using fallbacks when needed)
-   cachedATR = GetValidatedIndicator(tempATR, FALLBACK_ATR);
-   cachedRSI = GetValidatedIndicator(tempRSI, FALLBACK_RSI);
-   cachedFastMA = GetValidatedIndicator(tempFastMA, FALLBACK_MA);
-   cachedSlowMA = GetValidatedIndicator(tempSlowMA, FALLBACK_MA);
-   cachedADX = GetValidatedIndicator(tempADX, FALLBACK_ADX);
-   cachedBollingerWidth = tempBollingerWidth; // directly assigned, assumed valid
+   
+   // Validate raw indicator values and apply fallback if needed
+   cachedATR = (IsValidIndicatorValue(rawATR) == VALID ? rawATR : FALLBACK_ATR);
+   cachedRSI = (IsValidIndicatorValue(rawRSI) == VALID ? rawRSI : FALLBACK_RSI);
+   cachedFastMA = (IsValidIndicatorValue(rawFastMA) == VALID ? rawFastMA : FALLBACK_MA);
+   cachedSlowMA = (IsValidIndicatorValue(rawSlowMA) == VALID ? rawSlowMA : FALLBACK_MA);
+   cachedADX = (IsValidIndicatorValue(rawADX) == VALID ? rawADX : FALLBACK_ADX);
+   cachedBollingerWidth = bollingerWidth;
    cachedUpperBand = upperBand;
    cachedLowerBand = lowerBand;
-   cachedIndicators[INDICATOR_MACD_MAIN] = (IsValidIndicatorValue(macdMain)==VALID) ? macdMain : 0;
-   cachedIndicators[INDICATOR_MACD_SIGNAL] = (IsValidIndicatorValue(macdSignal)==VALID) ? macdSignal : 0;
+   cachedIndicators[INDICATOR_MACD_MAIN] = (IsValidIndicatorValue(macdMain)==VALID ? macdMain : 0);
+   cachedIndicators[INDICATOR_MACD_SIGNAL] = (IsValidIndicatorValue(macdSignal)==VALID ? macdSignal : 0);
+
+   // Calculate multi-timeframe trend strength and smooth it slightly
+   double rawTrendStrength = CalculateMultiTimeframeTrendStrength(sym, FastMAPeriod, SlowMAPeriod);
+   cachedTrendStrength = SmoothValue(rawTrendStrength, cachedTrendStrength);
    
-   // Calculate multi-timeframe trend strength
-   cachedTrendStrength = CalculateMultiTimeframeTrendStrength(sym, FastMAPeriod, SlowMAPeriod);
-   
-   // --- Begin MarketState mismatch check (Option 1) ---
-   // Build a temporary MarketState structure using current values.
+   // --- Begin MarketState mismatch check (relaxed tolerance) ---
    MarketState currentState;
    currentState.isVolatile    = (MarketVolatility(tf) > volatilityThreshold);
    currentState.atr           = cachedATR;
@@ -1592,22 +1597,23 @@ void UpdateCachedIndicators(){
    currentState.volatilityScore = CalculateVolatilityScoreDummy();
    currentState.lastUpdate    = TimeCurrent();
    
-   // Static cached state (renamed to avoid name collisions)
+   // Use a static variable to hold the previous market state
    static MarketState cachedMarketState = currentState;
    
-   // Allow ATR differences up to 5% and check volatile flag equality.
+   // Define tolerances – allowing up to 5% difference in ATR and 10% in volatility score
    double atrTolerance = cachedMarketState.atr * 0.05;
+   double volTolerance = cachedMarketState.volatilityScore * 0.10;
    bool mismatchDetected = (MathAbs(cachedMarketState.atr - currentState.atr) > atrTolerance) ||
+                           (MathAbs(cachedMarketState.volatilityScore - currentState.volatilityScore) > volTolerance) ||
                            (cachedMarketState.isVolatile != currentState.isVolatile);
    
    if(mismatchDetected) {
       Log("MarketState mismatch detected.", LOG_WARNING);
    }
-   // Always update the cached market state to current
    cachedMarketState = currentState;
    // --- End MarketState mismatch check ---
 
-   // Debug logging of updated indicators
+   // Debug logging
    if(debugMode) {
       Log("UpdateCachedIndicators: ATR=" + DoubleToString(cachedATR,6) +
           " RSI=" + DoubleToString(cachedRSI,2) +
@@ -2000,20 +2006,27 @@ double CalculateMultiTimeframeTrendStrength(string symbol = "", int fastMAPeriod
    if(StringLen(symbol) == 0)
       symbol = Symbol();
 
+   // Define timeframes and base weights
    const int timeframes[] = { PERIOD_M15, PERIOD_H1, PERIOD_H4 };
    double weights[] = { 0.3, 0.4, 0.3 };
 
-   // Normalize weights if necessary
-   double weightSum = 0.0;
-   int weightCount = ArraySize(weights);
-   for(int i = 0; i < weightCount; i++)
-      weightSum += weights[i];
-
-   if(MathAbs(weightSum - 1.0) > 0.00001) {
-      for(int j = 0; j < weightCount; j++)
-         weights[j] /= weightSum;
+   // Optionally adjust weights based on market volatility
+   double overallVol = MarketVolatility(PERIOD_H1);
+   if(overallVol > 2.0) {
+      weights[0] += 0.1;  // increase M15 weight
+      weights[2] -= 0.1;  // decrease H4 weight
    }
-   
+
+   // Normalize weights using loop variables in separate scopes
+   double weightSum = 0.0;
+   int weightCount = ArraySize(weights);{
+    for(int i = 0; i < weightCount; i++)
+        weightSum += weights[i];
+   }{
+    for(int j = 0; j < weightCount; j++)
+        weights[j] /= weightSum;
+   }
+
    double totalTrendStrength = 0.0;
    int tfCount = ArraySize(timeframes);
    for(int m = 0; m < tfCount; m++) {
@@ -2022,11 +2035,10 @@ double CalculateMultiTimeframeTrendStrength(string symbol = "", int fastMAPeriod
       if(fastMA > 0 && slowMA > 0)
          totalTrendStrength += ((fastMA - slowMA) / slowMA) * weights[m];
    }
-   
+
    totalTrendStrength = NormalizeDouble(totalTrendStrength, 5);
    if(DebugMode)
       Print(StringFormat("Trend Strength: %.5f", totalTrendStrength));
-
    return totalTrendStrength;
 }
 
@@ -2751,54 +2763,40 @@ double GetIndicatorValue(string symbol, int period, IndicatorType indicatorType,
 // Enhanced Strategy Selection & Optimization based on Market Conditions
 //------------------------------------------------------------------
 TradingStrategy EnhancedStrategySelection(){
-   // Update cached indicators to ensure we have fresh data
    UpdateCachedIndicators();
    
-   // Check basic validity (e.g., sufficient data, no extreme conditions)
-   if(!CheckStrategyValidity())   {
-      Log("EnhancedStrategySelection: Market conditions not met. Defaulting to TrendFollowing.", LOG_WARNING);
+   if(!CheckStrategyValidity()){
+      Log("EnhancedStrategySelection: Conditions not met. Defaulting to TrendFollowing.", LOG_WARNING);
       return TrendFollowing;
    }
    
-   // Local copies for clarity
-   double localTrendStrength = cachedTrendStrength;  // e.g., from a moving average slope or similar
-   double localRSI           = cachedRSI;            // RSI indicator value
-   double localADX           = cachedADX;            // ADX for trend strength
-   double localMACD          = cachedIndicators[INDICATOR_MACD_MAIN]; // MACD main line
-   double localMACDSignal    = cachedIndicators[INDICATOR_MACD_SIGNAL]; // MACD signal line
-   double macdHistogram      = localMACD - localMACDSignal; // Extra confirmation signal
+   // Use locally cached, smoothed indicator values
+   double localTrendStrength = cachedTrendStrength;
+   double localRSI = cachedRSI;
+   double localADX = cachedADX;
+   double macdHistogram = cachedIndicators[INDICATOR_MACD_MAIN] - cachedIndicators[INDICATOR_MACD_SIGNAL];
 
-   Log("EnhancedStrategySelection: Indicators - TrendStrength=" + DoubleToString(localTrendStrength,2) +
-       ", RSI=" + DoubleToString(localRSI,2) +
-       ", ADX=" + DoubleToString(localADX,2) +
-       ", MACD=" + DoubleToString(localMACD,2) +
-       ", MACDSignal=" + DoubleToString(localMACDSignal,2) +
-       ", MACDHistogram=" + DoubleToString(macdHistogram,2), LOG_INFO);
-   
-   // Example filtering logic:
-   // Favor TrendFollowing if ADX is strong, trend strength is high, and MACD histogram is positive.
-   if(localADX >= 25 && localTrendStrength > 50 && macdHistogram > 0.1)   {
-      Log("EnhancedStrategySelection: Conditions favor TrendFollowing.", LOG_INFO);
+   Log("EnhancedStrategySelection: Trend=" + DoubleToString(localTrendStrength,2) +
+       " RSI=" + DoubleToString(localRSI,2) +
+       " ADX=" + DoubleToString(localADX,2) +
+       " MACDHist=" + DoubleToString(macdHistogram,2), LOG_INFO);
+
+   // Example selection logic:
+   // Favor TrendFollowing if strong trend and ADX are high
+   if(localADX >= 25 && localTrendStrength > 0.05 && macdHistogram > 0.0) {
       return TrendFollowing;
    }
-   // If RSI is oversold and MACD histogram is negative, favor MeanReversion.
-   else if(localRSI < 30 && macdHistogram < -0.1)   {
-      Log("EnhancedStrategySelection: Conditions favor MeanReversion (Oversold).", LOG_INFO);
+   // Favor MeanReversion when RSI indicates extreme conditions
+   else if(localRSI < 30 || localRSI > 70) {
       return MeanReversion;
    }
-   // If RSI is overbought and MACD histogram is positive, favor MeanReversion.
-   else if(localRSI > 70 && macdHistogram > 0.1)   {
-      Log("EnhancedStrategySelection: Conditions favor MeanReversion (Overbought).", LOG_INFO);
-      return MeanReversion;
-   }
-   // New condition: If RSI is moderate and trend strength is weak, favor CounterTrend.
-   else if(localRSI >= 30 && localRSI <= 50 && localTrendStrength < 40) {
-      Log("EnhancedStrategySelection: Conditions favor CounterTrend.", LOG_INFO);
+   // Favor CounterTrend if trend is weak but conditions are oscillatory
+   else if(localTrendStrength < 0.02 && MathAbs(macdHistogram) > 0.05) {
       return CounterTrend;
    }
-   else   {
-      Log("EnhancedStrategySelection: Conditions inconclusive; defaulting to TrendFollowing.", LOG_INFO);
-      return TrendFollowing;
+   // Fallback to Scalping in moderate conditions
+   else {
+      return Scalping;
    }
 }
 
@@ -5247,25 +5245,25 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 }
 
 //------------------------------------------------------------------
-// Execute Trading Strategy with calculated parameters.
+// Execute Trading Strategy with calculated parameters and dynamic risk management.
 //------------------------------------------------------------------
 bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment){
-   // Validate input values
    if(equity <= 0 || drawdown < 0)   {
       Log("ExecuteStrategy: Invalid equity or drawdown.", LOG_ERROR);
       return false;
    }
    
-   double lotSize = 0.0;
-   double sl = 0.0;
-   double tp = 0.0;
+   double lotSize = 0.0, sl = 0.0, tp = 0.0;
    
-   // Calculate order parameters based on selected strategy
-   switch(strategy)   {
+   // Dynamically adjust risk based on drawdown and recent performance.
+   // (You can further refine these calculations based on your backtesting results.)
+   RiskLevelType riskLevel = (drawdown > 0.2 * equity) ? RiskLow : RiskMedium;
+
+   switch(strategy) {
       case TrendFollowing:
-         sl = CalculateStopLoss(RiskMedium);
-         tp = CalculateTakeProfit(RiskMedium);
-         lotSize = CalculatePositionSize(RiskMedium, sl);
+         sl = CalculateStopLoss(riskLevel);
+         tp = CalculateTakeProfit(riskLevel);
+         lotSize = CalculatePositionSize(riskLevel, sl);
          break;
       case Scalping:
          sl = CalculateStopLoss(RiskLow);
@@ -5273,20 +5271,22 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
          lotSize = CalculatePositionSize(RiskLow, sl);
          break;
       case CounterTrend:
-         // New implementation for CounterTrend strategy (enum value 4)
-         Log("ExecuteStrategy: Processing CounterTrend strategy.", LOG_INFO);
-         // For CounterTrend, we use a medium risk configuration (adjust as needed)
+         Log("ExecuteStrategy: Processing CounterTrend.", LOG_INFO);
+         sl = CalculateStopLoss(riskLevel);
+         tp = CalculateTakeProfit(riskLevel);
+         lotSize = CalculatePositionSize(riskLevel, sl);
+         break;
+      case MeanReversion:
+         Log("ExecuteStrategy: Processing MeanReversion.", LOG_INFO);
          sl = CalculateStopLoss(RiskMedium);
          tp = CalculateTakeProfit(RiskMedium);
          lotSize = CalculatePositionSize(RiskMedium, sl);
          break;
-      // Extend with additional strategies as needed
       default:
          Log("ExecuteStrategy: Unsupported strategy " + IntegerToString(strategy), LOG_ERROR);
          return false;
    }
    
-   // Validate computed order parameters
    if(lotSize <= 0 || sl <= 0 || tp <= 0)   {
       Log("ExecuteStrategy: Computed invalid parameters. LotSize=" + DoubleToString(lotSize,2) +
           " SL=" + DoubleToString(sl,2) +
@@ -5294,24 +5294,20 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
       return false;
    }
    
-   // Select order type based on market sentiment (example threshold 0.5)
    int orderType = (marketSentiment >= 0.5) ? OP_BUY : OP_SELL;
    double price = (orderType == OP_BUY) ? Ask : Bid;
    
-   // Validate that SL and TP make sense relative to the current price
    if((orderType == OP_BUY && (sl >= price || tp <= price)) ||
-      (orderType == OP_SELL && (sl <= price || tp >= price)))   {
+      (orderType == OP_SELL && (sl <= price || tp >= price))) {
       Log("ExecuteStrategy: Price conditions invalid. Price=" + DoubleToString(price, Digits()), LOG_ERROR);
       return false;
    }
    
-   // Execute the order with specified slippage and magic number
    int slippage = Slippage;
    int ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
-   if(ticket < 0)   {
+   if(ticket < 0) {
       int errorCode = GetLastError();
       Log("ExecuteStrategy: OrderSend failed. Error: " + IntegerToString(errorCode), LOG_ERROR);
-      // Removed ResetLastError() to preserve errorCode for later use.
       return false;
    }
    
