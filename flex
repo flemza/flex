@@ -307,107 +307,100 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
 }
 
 //+------------------------------------------------------------------+
-//| OnTick Event - Improved version                                  |
+//| OnTick Event - Updated with enhanced risk controls and logging   |
 //+------------------------------------------------------------------+
-void OnTick() {
-   // Update the indicator cache if a new candle has formed
+void OnTick(){
+   // Update indicators if a new candle is confirmed
    UpdateIndicatorCache(Symbol(), Timeframe);
-   
-   // (Optional) Retrieve cached indicator values if needed in your logic
-   double currentATR = GetCachedATR();
-   double currentRSI = GetCachedRSI();
-   // You can add additional cached values (FastMA, SlowMA, etc.) as needed
 
+   // Prevent overtrading: execute only if sufficient time has passed since last trade
    static datetime lastExecutionTime = 0;
    datetime currentTime = TimeCurrent();
    int minInterval = GetDynamicExecutionInterval();
-   
-   if (currentTime - lastExecutionTime < minInterval) {
-      Log("Execution skipped to avoid overtrading.", LOG_INFO);
+   if(currentTime - lastExecutionTime < minInterval)   {
+      Log("Skipping execution to avoid overtrading.", LOG_INFO);
       return;
    }
    
+   // Gather market state and risk metrics
    double equity = AccountEquity();
-   double drawdown = cachedDrawdownPercentage;
-   double sentiment = cachedMarketSentiment;
+   double drawdown = CalculateDrawdownPercentage();
+   double sentiment = CalculateMarketSentiment();
    
+   // Select the best strategy based on multi-indicator evaluation
    TradingStrategy strategy = SelectBestStrategy();
-   if (strategy == INVALID_STRATEGY) {
-      Log("No valid strategy selected. Aborting execution.", LOG_ERROR);
+   if(strategy == INVALID_STRATEGY)   {
+      Log("No valid strategy selected. Aborting tick execution.", LOG_ERROR);
       return;
    }
    
-   if (!ExecuteStrategy(strategy, equity, drawdown, sentiment)) {
+   // Execute the chosen strategy with built-in risk management
+   if(!ExecuteStrategy(strategy, equity, drawdown, sentiment))   {
       int error = GetLastError();
-      if (IsRetryableError(error)) {
-         Log("Retrying execution. Error: " + IntegerToString(error), LOG_WARNING);
+      if(IsRetryableError(error))      {
+         Log("Retryable error (" + IntegerToString(error) + ") encountered. Adjusting risk parameters and retrying.", LOG_WARNING);
          AdjustRiskParametersForRetry();
       }
-      else {
-         Log("Aborting execution. Error: " + IntegerToString(error), LOG_ERROR);
+      else      {
+         Log("Non-retryable error (" + IntegerToString(error) + "). Execution aborted.", LOG_ERROR);
       }
+      return;
    }
-   else {
-      lastExecutionTime = currentTime;
-      Log("Strategy executed successfully.", LOG_INFO);
-      UpdateStopLossTakeProfit();
-      UpdateTrailingStop();
-      MoveStopToBreakEven();
-   }
+   
+   // Update trade management functions after successful execution
+   lastExecutionTime = currentTime;
+   Log("Strategy executed successfully: " + StrategyToString(strategy), LOG_INFO);
+   UpdateStopLossTakeProfit();
+   UpdateTrailingStop();
+   MoveStopToBreakEven();
 }
 
 //+------------------------------------------------------------------+
-//| OnTimer Event - Improved version                                 |
+//| OnTimer Event - Updated with adaptive scheduling and strategy    |
 //+------------------------------------------------------------------+
-void OnTimer() {
-    static datetime lastCheck = 0;
-    static datetime lastOptionalTaskRun = 0;
-    static datetime lastStrategyOptimizationTime = 0;
-    datetime currentTime = TimeCurrent();
-    
-    // Run timer tasks at defined performance intervals
-    if (currentTime - lastCheck < performanceCheckInterval)
-       return;
-    lastCheck = currentTime;
-    
-    // Check for recovery mode or excessive risk
-    if (CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage())) {
-       Log("Risk limits breached or recovery mode active. Trading disabled.", LOG_WARNING);
-       return;
-    }
-    
-    // Handle open orders and update market data
-    if (HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK) {
-       Log("Failed to handle existing orders.", LOG_ERROR);
-       return;
-    }
-    
-    if (ShouldUpdateIndicators(0.0010, 0, false))
-       UpdateCachedIndicators();
-    
-    cachedDrawdownPercentage = CalculateDrawdownPercentage();
-    cachedMarketSentiment = CalculateMarketSentiment();
-    AdjustSLTP();
-    EvaluateStrategyPerformance();
-    ExecuteAllStrategies();
-    
-    // Strategy optimization at cooldown intervals
-    const int strategyOptimizationCooldown = 900; // 15 minutes
-    if (currentTime - lastStrategyOptimizationTime >= strategyOptimizationCooldown) {
-       Log("Triggering strategy optimization.", LOG_INFO);
-       ResetAndOptimizeStrategy();
-       lastStrategyOptimizationTime = currentTime;
-    }
-    
-    if (ShouldLogPerformanceMetrics(LOG_INFO))
-       LogPerformanceMetrics();
-    
-    if (currentTime - lastOptionalTaskRun >= 3600) {
-       RunOptionalTasks();
-       lastOptionalTaskRun = currentTime;
-    }
-    
-    Log("OnTimer tasks completed successfully.", LOG_INFO);
+void OnTimer(){
+   static datetime lastCheck = 0, lastOptionalTaskRun = 0, lastOptimizationTime = 0;
+   datetime currentTime = TimeCurrent();
+   
+   // Execute timer tasks only if the performance interval has elapsed
+   if(currentTime - lastCheck < performanceCheckInterval)
+      return;
+   lastCheck = currentTime;
+   
+   // Exit if risk limits or recovery mode conditions are met
+   if(CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage()))   {
+      Log("Risk limits exceeded or recovery mode active. Trading disabled.", LOG_WARNING);
+      return;
+   }
+   
+   // Process open orders and update market data with modularized functions
+   if(HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK)   {
+      Log("Error handling open orders.", LOG_ERROR);
+      return;
+   }
+   UpdateCachedIndicators();
+   cachedDrawdownPercentage = CalculateDrawdownPercentage();
+   cachedMarketSentiment = CalculateMarketSentiment();
+   AdjustSLTP();
+   EvaluateStrategyPerformance();
+   ExecuteAllStrategies();
+   
+   // Optimize strategy parameters every 15 minutes
+   const int optimizationCooldown = 900;
+   if(currentTime - lastOptimizationTime >= optimizationCooldown)   {
+      Log("Starting strategy optimization process.", LOG_INFO);
+      ResetAndOptimizeStrategy();
+      lastOptimizationTime = currentTime;
+   }
+   
+   // Log performance metrics and execute optional tasks on a longer interval
+   if(ShouldLogPerformanceMetrics(LOG_INFO))
+      LogPerformanceMetrics();
+   if(currentTime - lastOptionalTaskRun >= 3600)   {
+      RunOptionalTasks();
+      lastOptionalTaskRun = currentTime;
+   }
+   Log("OnTimer tasks executed successfully.", LOG_INFO);
 }
 
 //+------------------------------------------------------------------+
@@ -430,40 +423,42 @@ void UpdateStopLossTakeProfit(){
 }
 
 //+------------------------------------------------------------------+
-//| Update trailing stops for open orders - Improved version         |
+//| Update trailing stops with dynamic calculation based on ATR      |
 //+------------------------------------------------------------------+
-void UpdateTrailingStop() {
-    string symbol = Symbol();
-    int totalOrders = OrdersTotal();
-    double tickSize = MarketInfo(symbol, MODE_TICKSIZE);
-    double trailingStart = 20 * tickSize;
-    double trailingStep  = 5 * tickSize;
-    
-    for (int i = 0; i < totalOrders; i++) {
-        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) {
-            if (OrderSymbol() != symbol)
-                continue;
-            int orderType = OrderType();
-            double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
-            double openPrice = OrderOpenPrice();
-            double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
-            
-            // Update trailing stop only when profit threshold is met
-            if (profitPips >= (trailingStart / tickSize)) {
-                double newSL = (orderType == OP_BUY) ? currentPrice - trailingStep : currentPrice + trailingStep;
-                if ((orderType == OP_BUY && newSL > OrderStopLoss()) || (orderType == OP_SELL && newSL < OrderStopLoss())) {
-                    if (OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrYellow))
-                        Log("Trailing stop updated for order #" + IntegerToString(OrderTicket()), LOG_INFO);
-                    else
-                        Log("Failed to update trailing stop for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
-                }
+void UpdateTrailingStop(){
+   string symbol = Symbol();
+   int totalOrders = OrdersTotal();
+   double tickSize = MarketInfo(symbol, MODE_TICKSIZE);
+   double currentATR = GetCachedATR(); // Use ATR for dynamic trailing steps
+   double trailingStart = MathMax(20 * tickSize, currentATR * 1.2);
+   double trailingStep = MathMax(5 * tickSize, currentATR * 0.3);
+   
+   for(int i = 0; i < totalOrders; i++)   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))      {
+         if(OrderSymbol() != symbol)
+            continue;
+         int orderType = OrderType();
+         double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
+         double openPrice = OrderOpenPrice();
+         double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
+         
+         // Only adjust trailing stop if profit exceeds the dynamic threshold
+         if(profitPips >= (trailingStart / tickSize))         {
+            double newSL = (orderType == OP_BUY) ? currentPrice - trailingStep : currentPrice + trailingStep;
+            if((orderType == OP_BUY && newSL > OrderStopLoss()) ||
+               (orderType == OP_SELL && newSL < OrderStopLoss()))            {
+               if(OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrYellow))
+                  Log("Trailing stop updated for order #" + IntegerToString(OrderTicket()), LOG_INFO);
+               else
+                  Log("Failed to update trailing stop for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
             }
-        }
-    }
+         }
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
-//| Move stop loss to break-even if trade is in sufficient profit      |
+//| Move stop loss to break-even if profit threshold is reached       |
 //+------------------------------------------------------------------+
 void MoveStopToBreakEven(){
    string sym = Symbol();
@@ -475,13 +470,12 @@ void MoveStopToBreakEven(){
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))      {
          if(OrderSymbol() != sym)
             continue;
-         
          int orderType = OrderType();
          double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
          double openPrice = OrderOpenPrice();
          double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize : (openPrice - currentPrice) / tickSize;
-         
          if(profitPips >= (breakEvenThreshold / tickSize))         {
+            // Use order open price as break-even stop loss
             if(OrderModify(OrderTicket(), OrderOpenPrice(), openPrice, OrderTakeProfit(), 0, clrGreen))
                Log("Stop loss moved to break-even for order #" + IntegerToString(OrderTicket()), LOG_INFO);
             else
