@@ -34,6 +34,7 @@
 #define FALLBACK_UPPERBAND 0.0       // Adjust as appropriate
 #define FALLBACK_LOWERBAND 0.0       // Adjust as appropriate
 #define INDICATOR_MACD_SIGNAL 1  // MACD Signal Line index
+#define MAX_ERROR_COUNT 3
 
 enum TradingStrategy {TrendFollowing, Scalping, RangeBound, Hybrid, CounterTrend, Grid, MeanReversion, Breakout, Momentum, OtherStrategy, SafeMode};
 enum RiskLevelType {RiskLow = 1, RiskMedium = 2, RiskHigh = 3};
@@ -170,6 +171,7 @@ struct StrategyThreshold {TradingStrategy strategy; double threshold;};
 struct StrategyTP {string strategy; double multiplier;};
 struct StrategyPerformanceResult {double performance; bool error;};
 struct IndicatorCache {double atr; double rsi; double fastMA; double slowMA; double adx; double upperBand; double lowerBand; double bollingerWidth; double trendStrength; double macdMain; double macdSignal; datetime lastUpdate;};
+struct ErrorRecord {string symbol; int errorCount; datetime lastErrorTime;};
 
 double errorStack[];
 double requestedPrices[];  // Array to store requested prices for multiple trades
@@ -191,6 +193,7 @@ StrategyState g_strategyState; // Global state
 IndicatorLogTimes logTimes = {};
 IndicatorCache g_IndicatorCache;
 VolatilityState volatilityState = { -1, 0, -1 }; // Initialize with default values
+ErrorRecord Blacklist[];
 
 //+------------------------------------------------------------------+
 //| Expert Advisor Initialization                                    |
@@ -310,46 +313,32 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
 //| OnTick Event - Updated with enhanced risk controls and logging   |
 //+------------------------------------------------------------------+
 void OnTick(){
-   // Update indicators if a new candle is confirmed
+   // Update indicators and market state from the modular indicator manager
    UpdateIndicatorCache(Symbol(), Timeframe);
-
-   // Prevent overtrading: execute only if sufficient time has passed since last trade
-   static datetime lastExecutionTime = 0;
-   datetime currentTime = TimeCurrent();
-   int minInterval = GetDynamicExecutionInterval();
-   if(currentTime - lastExecutionTime < minInterval)   {
-      Log("Skipping execution to avoid overtrading.", LOG_INFO);
+   
+   // Use weighted signal fusion to select strategy
+   TradingStrategy strategy = SelectCombinedStrategy();
+   if(strategy == INVALID_STRATEGY)   {
+      Log("No valid combined strategy selected. Aborting tick execution.", LOG_ERROR);
       return;
    }
    
-   // Gather market state and risk metrics
+   // Calculate dynamic lot size for new orders
+   double lotSize = CalculateDynamicLotSize();
    double equity = AccountEquity();
    double drawdown = CalculateDrawdownPercentage();
    double sentiment = CalculateMarketSentiment();
-   
-   // Select the best strategy based on multi-indicator evaluation
-   TradingStrategy strategy = SelectBestStrategy();
-   if(strategy == INVALID_STRATEGY)   {
-      Log("No valid strategy selected. Aborting tick execution.", LOG_ERROR);
-      return;
-   }
-   
-   // Execute the chosen strategy with built-in risk management
+   // Proceed to execute strategy (your ExecuteStrategy() function may need to accept lotSize)
    if(!ExecuteStrategy(strategy, equity, drawdown, sentiment))   {
       int error = GetLastError();
-      if(IsRetryableError(error))      {
-         Log("Retryable error (" + IntegerToString(error) + ") encountered. Adjusting risk parameters and retrying.", LOG_WARNING);
-         AdjustRiskParametersForRetry();
-      }
-      else      {
-         Log("Non-retryable error (" + IntegerToString(error) + "). Execution aborted.", LOG_ERROR);
-      }
+      EnhancedLogError("Execution error for strategy " + StrategyToString(strategy), error, Symbol());
       return;
    }
    
-   // Update trade management functions after successful execution
-   lastExecutionTime = currentTime;
-   Log("Strategy executed successfully: " + StrategyToString(strategy), LOG_INFO);
+   // Manage existing orders with risk hedging (partial exits)
+   PartialExitCheck();
+   
+   // Update order management functions
    UpdateStopLossTakeProfit();
    UpdateTrailingStop();
    MoveStopToBreakEven();
@@ -401,6 +390,229 @@ void OnTimer(){
       lastOptionalTaskRun = currentTime;
    }
    Log("OnTimer tasks executed successfully.", LOG_INFO);
+}
+
+//+------------------------------------------------------------------+
+//| SelectCombinedStrategy - fuse signals from multiple strategies     |
+//+------------------------------------------------------------------+
+TradingStrategy SelectCombinedStrategy(){
+   // Example weights for each strategy signal (these might be configurable)
+   double weightTrend = 0.4;
+   double weightReversion = 0.3;
+   double weightMomentum = 0.3;
+   
+   // Get individual strategy signals (these functions return a value between -1 and +1)
+   double signalTrend = GetTrendFollowingSignal();      // e.g., +1 for bullish, -1 for bearish
+   double signalReversion = GetMeanReversionSignal();
+   double signalMomentum = GetMomentumSignal();
+   
+   // Weighted sum of signals
+   double combinedSignal = (signalTrend * weightTrend) +
+                           (signalReversion * weightReversion) +
+                           (signalMomentum * weightMomentum);
+   
+   // Determine strategy based on combined signal
+   if(combinedSignal > 0.3)
+      return TrendFollowing;
+   else if(combinedSignal < -0.3)
+      return CounterTrend;
+   else
+      return RangeBound;
+}
+
+// Returns a trend following signal (-1 to +1) based on dual EMAs.
+// A positive value indicates bullish conditions; a negative value indicates bearish.
+double GetTrendFollowingSignal(){
+   // Fast and slow EMA periods (configurable as needed)
+   int fastPeriod = 20;
+   int slowPeriod = 50;
+   
+   // Retrieve the fast and slow EMAs
+   double fastEMA = iMA(Symbol(), Timeframe, fastPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double slowEMA = iMA(Symbol(), Timeframe, slowPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
+   
+   // Calculate the difference and normalize by current price
+   double diff = fastEMA - slowEMA;
+   double normDiff = diff / Bid;
+   
+   // Define a threshold (e.g., 0.1% of current price) to filter noise
+   double threshold = 0.001;
+   if(normDiff > threshold)
+      return 1.0;
+   else if(normDiff < -threshold)
+      return -1.0;
+   return 0.0;
+}
+
+// Returns a mean reversion signal (-1 to +1).
+// Uses RSI and Bollinger Bands: if RSI is overbought and price is near the upper band, expect a reversal (-1).
+// If RSI is oversold and price is near the lower band, expect a reversal upward (+1).
+double GetMeanReversionSignal(){
+   // Retrieve the RSI value
+   int rsiPeriod = 14;
+   double rsi = iRSI(Symbol(), Timeframe, rsiPeriod, PRICE_CLOSE, 0);
+   
+   // Bollinger Bands parameters
+   int bbPeriod = 20;
+   double bbStdDev = 2.0;
+   double bbMiddle = iMA(Symbol(), Timeframe, bbPeriod, 0, MODE_SMA, PRICE_CLOSE, 0);
+   double bbUpper = iBands(Symbol(), Timeframe, bbPeriod, bbStdDev, 0, PRICE_CLOSE, MODE_UPPER, 0);
+   double bbLower = iBands(Symbol(), Timeframe, bbPeriod, bbStdDev, 0, PRICE_CLOSE, MODE_LOWER, 0);
+   
+   // Normalize the price's deviation from the middle of the bands
+   double deviation = (Bid - bbMiddle) / (bbUpper - bbLower);
+   
+   // Define thresholds for RSI and deviation
+   if(rsi > 70 && deviation > 0.3)
+      return -1.0;
+   else if(rsi < 30 && deviation < -0.3)
+      return 1.0;
+   return 0.0;
+}
+
+// Returns a momentum signal (-1 to +1) based on the change in momentum.
+// A positive value indicates increasing upward momentum; a negative value indicates increasing downward momentum.
+double GetMomentumSignal(){
+   int period = 14;
+   // Retrieve momentum values for the current and previous bars.
+   double momentumNow = iMomentum(Symbol(), Timeframe, period, PRICE_CLOSE, 0);
+   double momentumPrev = iMomentum(Symbol(), Timeframe, period, PRICE_CLOSE, 1);
+   
+   // Calculate the difference in momentum
+   double momentumDelta = momentumNow - momentumPrev;
+   
+   // Define a dynamic threshold as a fraction of the current momentum magnitude to filter out noise.
+   double threshold = 0.05 * MathAbs(momentumNow);
+   if(momentumDelta > threshold)
+      return 1.0;
+   else if(momentumDelta < -threshold)
+      return -1.0;
+   return 0.0;
+}
+
+// Returns a measure of market volatility using an average of ATR and standard deviation.
+// If the calculated volatility is invalid or zero, a fallback value is returned.
+double GetMarketVolatility(){
+   int atrPeriod = 14;
+   int stdDevPeriod = 14;
+   
+   // Calculate ATR as a measure of volatility
+   double atr = iATR(Symbol(), Timeframe, atrPeriod, 0);
+   
+   // Calculate standard deviation (using EMA smoothing)
+   double stdDev = iStdDev(Symbol(), Timeframe, stdDevPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
+   
+   // Combine both measures (simple average)
+   double volatility = (atr + stdDev) / 2.0;
+   
+   // Use a fallback if volatility is not valid
+   if(volatility <= 0)
+      return FALLBACK_ATR;
+   return volatility;
+}
+
+//+------------------------------------------------------------------+
+//| CalculateDynamicLotSize - compute lot size based on ATR, volatility|
+//+------------------------------------------------------------------+
+double CalculateDynamicLotSize(){
+   // Retrieve the current ATR value (make sure GetCachedATR() is updated regularly)
+   double currentATR = GetCachedATR();
+   // Retrieve a measure of market volatility (this could be based on standard deviation or other indicator)
+   double volatility = GetMarketVolatility();
+   
+   // Base risk percentage per trade (can be an input variable)
+   double riskPercentage = TradeRisk;  // e.g., 0.02 for 2% risk
+   
+   // Determine risk per pip; this calculation might be more advanced in your context.
+   double riskPerPip = currentATR * volatility;
+   if(riskPerPip <= 0)
+      riskPerPip = 1;  // fallback
+   
+   // Calculate maximum risk in currency for this trade
+   double equity = AccountEquity();
+   double riskAmount = equity * riskPercentage;
+   
+   // Calculate lot size. For simplicity, assume 1 pip = 10 currency units risk per lot.
+   double lotSize = riskAmount / (riskPerPip * 10);
+   
+   // Ensure lot size meets broker’s minimum and maximum requirements.
+   MarketInfoData marketInfo;
+   if(!InitializeMarketInfo(marketInfo))
+      return 0;
+   
+   lotSize = MathMax(marketInfo.minLotSize, lotSize);
+   lotSize = MathMin(marketInfo.maxLotSize, lotSize);
+   
+   return NormalizeDouble(lotSize, 2);
+}
+
+//+------------------------------------------------------------------+
+//| PartialExitCheck - exit part of a position if profit exceeds      |
+//+------------------------------------------------------------------+
+void PartialExitCheck(){
+   string symbol = Symbol();
+   int totalOrders = OrdersTotal();
+   double tickSize = MarketInfo(symbol, MODE_TICKSIZE);
+   // Profit threshold in pips to consider a partial exit
+   double profitThresholdPips = 50; // example value
+   
+   for (int i = 0; i < totalOrders; i++)   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))      {
+         if(OrderSymbol() != symbol)
+            continue;
+         
+         int orderType = OrderType();
+         double openPrice = OrderOpenPrice();
+         double currentPrice = (orderType == OP_BUY) ? Bid : Ask;
+         double profitPips = (orderType == OP_BUY) ? (currentPrice - openPrice) / tickSize :
+                                                     (openPrice - currentPrice) / tickSize;
+         // Check if the profit threshold is reached and partial exit is allowed
+         if(profitPips >= profitThresholdPips)         {
+            double lotToClose = OrderLots() * 0.5; // exit 50% of the position
+            if(lotToClose < MarketInfo(symbol, MODE_MINLOT))
+               lotToClose = OrderLots(); // if too small, close full
+            
+            // Place a partial exit order (this is a simplified example)
+            int ticket = OrderClose(OrderTicket(), lotToClose, currentPrice, Slippage, clrBlue);
+            if(ticket > 0)
+               Log("Partial exit executed for order #" + IntegerToString(OrderTicket()), LOG_INFO);
+            else
+               Log("Failed partial exit for order #" + IntegerToString(OrderTicket()), LOG_WARNING);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| EnhancedLogError - log error and add symbol to blacklist if needed |
+//+------------------------------------------------------------------+
+void EnhancedLogError(string message, int errorCode, string symbol){
+   Log(message + " Error code: " + IntegerToString(errorCode), LOG_ERROR);
+   
+   // Search for existing record for symbol in the blacklist
+   int recordIndex = -1;
+   for(int i = 0; i < ArraySize(Blacklist); i++)   {
+      if(Blacklist[i].symbol == symbol)      {
+         recordIndex = i;
+         break;
+      }
+   }
+   
+   if(recordIndex == -1)   {
+      // Create a new record if not found
+      ErrorRecord rec;
+      rec.symbol = symbol;
+      rec.errorCount = 1;
+      rec.lastErrorTime = TimeCurrent();
+      ArrayResize(Blacklist, ArraySize(Blacklist)+1);
+      Blacklist[ArraySize(Blacklist)-1] = rec;
+   }
+   else   {
+      Blacklist[recordIndex].errorCount++;
+      Blacklist[recordIndex].lastErrorTime = TimeCurrent();
+      if(Blacklist[recordIndex].errorCount >= MAX_ERROR_COUNT)
+         Log("Symbol " + symbol + " has been blacklisted due to repeated errors.", LOG_WARNING);
+   }
 }
 
 //+------------------------------------------------------------------+
