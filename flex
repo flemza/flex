@@ -2010,30 +2010,33 @@ double CalculateMultiTimeframeTrendStrength(string symbol = "", int fastMAPeriod
    const int timeframes[] = { PERIOD_M15, PERIOD_H1, PERIOD_H4 };
    double weights[] = { 0.3, 0.4, 0.3 };
 
-   // Optionally adjust weights based on market volatility
+   // Optionally adjust weights based on market volatility (using PERIOD_H1 as reference)
    double overallVol = MarketVolatility(PERIOD_H1);
    if(overallVol > 2.0) {
-      weights[0] += 0.1;  // increase M15 weight
-      weights[2] -= 0.1;  // decrease H4 weight
+      weights[0] += 0.1;  // Increase weight for M15 timeframe
+      weights[2] -= 0.1;  // Decrease weight for H4 timeframe
    }
 
-   // Normalize weights using loop variables in separate scopes
+   // Normalize weights using unique loop variable names in their own blocks
    double weightSum = 0.0;
-   int weightCount = ArraySize(weights);{
-    for(int i = 0; i < weightCount; i++)
-        weightSum += weights[i];
-   }{
-    for(int j = 0; j < weightCount; j++)
-        weights[j] /= weightSum;
+   int weightCount = ArraySize(weights);   {
+      for(int w_loop = 0; w_loop < weightCount; w_loop++) {
+         weightSum += weights[w_loop];
+      }
+   }   {
+      for(int w_loop2 = 0; w_loop2 < weightCount; w_loop2++) {
+         weights[w_loop2] /= weightSum;
+      }
    }
 
    double totalTrendStrength = 0.0;
    int tfCount = ArraySize(timeframes);
-   for(int m = 0; m < tfCount; m++) {
-      double fastMA = GetMovingAverage(symbol, timeframes[m], fastMAPeriod, 0);
-      double slowMA = GetMovingAverage(symbol, timeframes[m], slowMAPeriod, 0);
-      if(fastMA > 0 && slowMA > 0)
-         totalTrendStrength += ((fastMA - slowMA) / slowMA) * weights[m];
+   for(int tf_index = 0; tf_index < tfCount; tf_index++) {
+      double fastMA = GetMovingAverage(symbol, timeframes[tf_index], fastMAPeriod, 0);
+      double slowMA = GetMovingAverage(symbol, timeframes[tf_index], slowMAPeriod, 0);
+      if(fastMA > 0 && slowMA > 0) {
+         totalTrendStrength += ((fastMA - slowMA) / slowMA) * weights[tf_index];
+      }
    }
 
    totalTrendStrength = NormalizeDouble(totalTrendStrength, 5);
