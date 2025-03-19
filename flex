@@ -981,7 +981,13 @@ double CalculatePositionSize(RiskLevelType risk, double stopLossInPoints) {
 //+------------------------------------------------------------------+
 //| Set position size by sending an order with risk parameters       |
 //+------------------------------------------------------------------+
-void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0, double takeProfit = 0, int slippage = 3) {
+void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0, double takeProfit = 0, int slippage = 3){
+   // Check if we have reached the maximum allowed open orders
+   if (OrdersTotal() >= MaxOpenOrders)   {
+      Print("Max open orders (" + IntegerToString(MaxOpenOrders) + ") reached. Order placement aborted.");
+      return;
+   }
+   
    string sym = Symbol();
    double minLot = MarketInfo(sym, MODE_MINLOT);
    double maxLot = MarketInfo(sym, MODE_MAXLOT);
@@ -989,7 +995,7 @@ void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0
    
    if (lotSize <= 0 || stopLoss <= 0 || takeProfit <= 0 ||
        (orderType != OP_BUY && orderType != OP_SELL) ||
-       lotSize < minLot || lotSize > maxLot) {
+       lotSize < minLot || lotSize > maxLot)   {
       Print("Error: Invalid parameters for order placement.");
       return;
    }
@@ -999,7 +1005,7 @@ void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0
    
    if (AccountFreeMarginCheck(sym, orderType, lotSize) > AccountFreeMargin() ||
        (orderType == OP_BUY && (stopLoss >= price || takeProfit <= price)) ||
-       (orderType == OP_SELL && (stopLoss <= price || takeProfit >= price))) {
+       (orderType == OP_SELL && (stopLoss <= price || takeProfit >= price)))   {
       Print("Error: Invalid margin or price conditions.");
       return;
    }
@@ -2389,24 +2395,12 @@ bool IsMarketVolatile(){
 }
 
 //------------------------------------------------------------------
-// Helper function to find the index of a given symbol (using predefined symbols)
+// Helper function to find the index of a given symbol
 //------------------------------------------------------------------
 int GetSymbolIndex(string symbol) {
-    if (StringLen(symbol) == 0) {
-        Log("Empty symbol input.", LOG_ERROR);
-        return -1;
-    }
-    static string symbols[] = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD"};
-    for (int i = 0; i < ArraySize(symbols); i++) {
-        if (symbols[i] == symbol)
-            return i;
-    }
-    static bool symbolNotFoundLogged = false;
-    if (!symbolNotFoundLogged) {
-        Log("Symbol not found: " + symbol, LOG_WARNING);
-        symbolNotFoundLogged = true;
-    }
-    return -1;
+   // Removed static list. If additional processing is needed, implement it here.
+   // For example, you could build a dynamic list of symbols from the current portfolio.
+   return 0; // Return 0 or another computed index; alternatively, remove the function if not needed.
 }
 
 //------------------------------------------------------------------
@@ -2952,11 +2946,13 @@ double CalculateMarketSentiment(){
    static datetime lastBar = 0;
    static double sentimentCache = 0.5; // Neutral default
    
+   // Only update if a new bar has formed
    if (Time[0] == lastBar)
       return sentimentCache;
    lastBar = Time[0];
    
    const string sym = Symbol();
+   
    // H4 calculations
    double rsiH4    = GetIndicatorValue(sym, PERIOD_H4, INDICATOR_RSI, 0);
    double macdH4_0 = GetIndicatorValue(sym, PERIOD_H4, INDICATOR_MACD_MAIN, 0);
@@ -2969,13 +2965,17 @@ double CalculateMarketSentiment(){
    double macdM15_1 = GetIndicatorValue(sym, PERIOD_M15, INDICATOR_MACD_MAIN, 1);
    double m15Sentiment = CalculateSentiment(rsiM15, macdM15_0, macdM15_1, 70, 30);
    
+   // Combine sentiments using weights (70% H4, 30% M15) and clamp between 0 and 1
    const double weightH4 = 0.7, weightM15 = 0.3;
    double combined = MathMax(0.0, MathMin(h4Sentiment * weightH4 + m15Sentiment * weightM15, 1.0));
    
-   if (MathAbs(combined - sentimentCache) > 0.2)   {
+   // Update cached sentiment if the change is greater than 0.1 (more responsive than before)
+   double updateThreshold = 0.1;
+   if (MathAbs(combined - sentimentCache) > updateThreshold) {
       Log(StringFormat("Sentiment change: %.2f -> %.2f", sentimentCache, combined), LOG_WARNING);
       sentimentCache = combined;
    }
+   
    return sentimentCache;
 }
 
@@ -5520,6 +5520,12 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 // Execute Trading Strategy with dynamic risk management and order retry
 //------------------------------------------------------------------
 bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment) {
+   // Check if maximum open orders limit has been reached
+   if (OrdersTotal() >= MaxOpenOrders) {
+      Log("ExecuteStrategy: Max open orders reached (" + IntegerToString(MaxOpenOrders) + "). No new orders placed.", LOG_INFO);
+      return false;
+   }
+
    // Log input parameters for debugging
    Log("ExecuteStrategy: Received parameters: equity=" + DoubleToString(equity,2) +
        ", drawdown=" + DoubleToString(drawdown,2) +
@@ -9342,6 +9348,12 @@ bool IsTotalRiskWithinLimits(){
 // Execute all strategies with risk and equity checks
 //------------------------------------------------------------------
 bool ExecuteAllStrategies(){
+   // Check if maximum open orders limit has been reached before executing further strategies
+   if (OrdersTotal() >= MaxOpenOrders) {
+      Log("ExecuteAllStrategies: Max open orders reached (" + IntegerToString(MaxOpenOrders) + "). Skipping execution of new strategies.", LOG_INFO);
+      return false;
+   }
+   
    // If any pre-check fails, exit early.
    if (ManageEquity(0.9, 1.0, 5.0, 60))
       return false;
