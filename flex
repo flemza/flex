@@ -944,47 +944,40 @@ bool SetStopLossTakeProfit(double stopLoss, double takeProfit) {
 //| Calculate position size using risk percentage, dynamic volatility adjustment, and margin requirements        |
 //+------------------------------------------------------------------+
 double CalculatePositionSize(RiskLevelType risk, double stopLossInPoints) {
-   // Base risk percentages by risk level (can be optimized via backtesting)
-   double baseRiskPercentage = 0.02; // default for medium risk
-   if(risk == RiskLow)
+   double baseRiskPercentage = 0.02; // Default for medium risk
+   if (risk == RiskLow)
       baseRiskPercentage = 0.01;
-   else if(risk == RiskHigh)
+   else if (risk == RiskHigh)
       baseRiskPercentage = 0.03;
    
-   // Adjust risk percentage if drawdown is high (reduce risk further)
-   double drawdown = CalculateDrawdownPercentage(); // assumes this function exists
-   if(drawdown > 0.10)  // e.g., more than 10% drawdown
-      baseRiskPercentage *= 0.8; // reduce risk by 20%
+   double drawdown = CalculateDrawdownPercentage();
+   if (drawdown > 0.10)
+      baseRiskPercentage *= 0.8; // Reduce risk by 20% if drawdown is high
    
-   // Incorporate market volatility: if current ATR is higher than a baseline, reduce risk
    double volFactor = (cachedATR > 0 ? cachedATR / FALLBACK_ATR : 1.0);
-   if(volFactor > 1.0)
-      baseRiskPercentage *= 0.9;  // reduce risk by 10% when volatility is high
-
-   // Calculate the monetary risk (riskAmount) per trade
-   double riskAmount = AccountEquity() * baseRiskPercentage;
+   if (volFactor > 1.0)
+      baseRiskPercentage *= 0.9; // Adjust further for high volatility
    
-   // Calculate lot size: riskAmount divided by (stop loss in points * tick value)
+   double riskAmount = AccountEquity() * baseRiskPercentage;
    double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
-   if(tickValue <= 0)
+   if (tickValue <= 0)
       tickValue = 1.0;
    double lotSize = riskAmount / (stopLossInPoints * tickValue);
-   
-   // Normalize lot size (2 decimal places) and check against maximum allowed
    lotSize = NormalizeDouble(lotSize, 2);
-   double maxAllowedLot = MaxAllowedLotSize; // defined as an input
-   if(lotSize > maxAllowedLot)
+   
+   double maxAllowedLot = MaxAllowedLotSize;
+   if (lotSize > maxAllowedLot)
       lotSize = maxAllowedLot;
+   
    return lotSize;
 }
 
 //+------------------------------------------------------------------+
 //| Set position size by sending an order with risk parameters       |
 //+------------------------------------------------------------------+
-void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0, double takeProfit = 0, int slippage = 3){
-   // Check if we have reached the maximum allowed open orders
-   if (OrdersTotal() >= MaxOpenOrders)   {
-      Print("Max open orders (" + IntegerToString(MaxOpenOrders) + ") reached. Order placement aborted.");
+void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0, double takeProfit = 0, int slippage = 3) {
+   if (OrdersTotal() >= MaxOpenOrders) {
+      Print("SetPositionSize: Max open orders (" + IntegerToString(MaxOpenOrders) + ") reached. Order placement aborted.");
       return;
    }
    
@@ -995,26 +988,25 @@ void SetPositionSize(double lotSize, int orderType = OP_BUY, double stopLoss = 0
    
    if (lotSize <= 0 || stopLoss <= 0 || takeProfit <= 0 ||
        (orderType != OP_BUY && orderType != OP_SELL) ||
-       lotSize < minLot || lotSize > maxLot)   {
-      Print("Error: Invalid parameters for order placement.");
+       lotSize < minLot || lotSize > maxLot) {
+      Print("SetPositionSize: Error: Invalid parameters for order placement.");
       return;
    }
    
    lotSize = NormalizeDouble(lotSize, digits);
    double price = (orderType == OP_BUY) ? Ask : Bid;
-   
    if (AccountFreeMarginCheck(sym, orderType, lotSize) > AccountFreeMargin() ||
        (orderType == OP_BUY && (stopLoss >= price || takeProfit <= price)) ||
-       (orderType == OP_SELL && (stopLoss <= price || takeProfit >= price)))   {
-      Print("Error: Invalid margin or price conditions.");
+       (orderType == OP_SELL && (stopLoss <= price || takeProfit >= price))) {
+      Print("SetPositionSize: Error: Invalid margin or price conditions.");
       return;
    }
    
    int ticket = OrderSend(sym, orderType, lotSize, price, slippage, stopLoss, takeProfit, "OrderComment", 0, 0, Blue);
    if (ticket < 0)
-      Print("Error: Order failed. Code: " + IntegerToString(GetLastError()));
+      Print("SetPositionSize: Error: Order failed. Code: " + IntegerToString(GetLastError()));
    else
-      Print("Order placed successfully. Ticket: " + IntegerToString(ticket));
+      Print("SetPositionSize: Order placed successfully. Ticket: " + IntegerToString(ticket));
 }
 
 //------------------------------------------------------------------
@@ -2931,28 +2923,35 @@ double CalculateSentiment(double RSI, double MACDMain, double MACDSignal, double
       return 0.5; // Neutral sentiment
    }
 
+   // Recalibrated thresholds:
+   // To reduce false bearish signals in rising markets, we now require a higher RSI to trigger a bearish signal.
+   // Likewise, to reduce false bullish signals in falling markets, we require a lower RSI.
+   double adjustedOverbought = 80;  // Increased from 70
+   double adjustedOversold   = 20;  // Decreased from 30
+
    // Determine sentiment based on RSI and MACD conditions
-   if (RSI >= RSI_Overbought && MACDMain < MACDSignal)
+   if (RSI >= adjustedOverbought && MACDMain < MACDSignal)
       return 0.2; // Strong Bearish sentiment
-   if (RSI <= RSI_Oversold && MACDMain > MACDSignal)
+   if (RSI <= adjustedOversold && MACDMain > MACDSignal)
       return 0.8; // Strong Bullish sentiment
-   return (MACDMain > MACDSignal) ? 0.6 : 0.4; // Neutral sentiment based on MACD comparison
+
+   // For cases where RSI is not at the extreme levels,
+   // return a slightly bullish sentiment if MACDMain > MACDSignal,
+   // otherwise, a slightly bearish sentiment.
+   return (MACDMain > MACDSignal) ? 0.6 : 0.4;
 }
 
 //------------------------------------------------------------------
 // Calculates market sentiment using multi-timeframe indicators.
 //------------------------------------------------------------------
-double CalculateMarketSentiment(){
+double CalculateMarketSentiment() {
    static datetime lastBar = 0;
    static double sentimentCache = 0.5; // Neutral default
-   
-   // Only update if a new bar has formed
    if (Time[0] == lastBar)
       return sentimentCache;
    lastBar = Time[0];
    
    const string sym = Symbol();
-   
    // H4 calculations
    double rsiH4    = GetIndicatorValue(sym, PERIOD_H4, INDICATOR_RSI, 0);
    double macdH4_0 = GetIndicatorValue(sym, PERIOD_H4, INDICATOR_MACD_MAIN, 0);
@@ -2965,17 +2964,14 @@ double CalculateMarketSentiment(){
    double macdM15_1 = GetIndicatorValue(sym, PERIOD_M15, INDICATOR_MACD_MAIN, 1);
    double m15Sentiment = CalculateSentiment(rsiM15, macdM15_0, macdM15_1, 70, 30);
    
-   // Combine sentiments using weights (70% H4, 30% M15) and clamp between 0 and 1
    const double weightH4 = 0.7, weightM15 = 0.3;
    double combined = MathMax(0.0, MathMin(h4Sentiment * weightH4 + m15Sentiment * weightM15, 1.0));
    
-   // Update cached sentiment if the change is greater than 0.1 (more responsive than before)
-   double updateThreshold = 0.1;
+   double updateThreshold = 0.1; // More responsive than before
    if (MathAbs(combined - sentimentCache) > updateThreshold) {
       Log(StringFormat("Sentiment change: %.2f -> %.2f", sentimentCache, combined), LOG_WARNING);
       sentimentCache = combined;
    }
-   
    return sentimentCache;
 }
 
@@ -5520,26 +5516,24 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 // Execute Trading Strategy with dynamic risk management and order retry
 //------------------------------------------------------------------
 bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment) {
-   // Check if maximum open orders limit has been reached
+   // Check max open orders before proceeding
    if (OrdersTotal() >= MaxOpenOrders) {
       Log("ExecuteStrategy: Max open orders reached (" + IntegerToString(MaxOpenOrders) + "). No new orders placed.", LOG_INFO);
       return false;
    }
-
+   
    // Log input parameters for debugging
    Log("ExecuteStrategy: Received parameters: equity=" + DoubleToString(equity,2) +
        ", drawdown=" + DoubleToString(drawdown,2) +
        ", marketSentiment=" + DoubleToString(marketSentiment,2), LOG_DEBUG);
-
    if (equity <= 0 || drawdown < 0) {
       Log("ExecuteStrategy: Invalid equity or drawdown.", LOG_ERROR);
       return false;
    }
    
-   double lotSize = 0.0, sl = 0.0, tp = 0.0;
+   // Determine risk level based on drawdown
    RiskLevelType riskLevel = (drawdown > 0.2 * equity) ? RiskLow : RiskMedium;
    Log("ExecuteStrategy: Calculated risk level: " + RiskLevelToString(riskLevel), LOG_DEBUG);
-   
    switch (strategy) {
       case TrendFollowing:
          Log("ExecuteStrategy: Processing TrendFollowing.", LOG_INFO);
@@ -5555,67 +5549,112 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
          Log("ExecuteStrategy: Processing MeanReversion.", LOG_INFO);
          riskLevel = RiskMedium;
          break;
+      case RangeBound:
+         Log("ExecuteStrategy: Processing RangeBound.", LOG_INFO);
+         riskLevel = RiskMedium;
+         break;
       default:
          Log("ExecuteStrategy: Unsupported strategy " + IntegerToString(strategy), LOG_ERROR);
          return false;
    }
-
-   sl = CalculateStopLoss(riskLevel);
-   tp = CalculateTakeProfit(riskLevel);
-   lotSize = CalculatePositionSize(riskLevel, sl);
-
-   // Validate computed parameters
+   
+   // Calculate SL and TP distances in "pips"
+   double slDistance = CalculateStopLoss(riskLevel);  // e.g., 50 pips
+   double tpDistance = CalculateTakeProfit(riskLevel);  // e.g., 100 pips
+   double lotSize = CalculatePositionSize(riskLevel, slDistance);
    Log("ExecuteStrategy: Computed parameters: LotSize=" + DoubleToString(lotSize,2) +
-       " SL=" + DoubleToString(sl,2) +
-       " TP=" + DoubleToString(tp,2), LOG_DEBUG);
-
-   if (lotSize <= 0 || sl <= 0 || tp <= 0) {
+       ", SL_distance=" + DoubleToString(slDistance,2) +
+       ", TP_distance=" + DoubleToString(tpDistance,2), LOG_DEBUG);
+   if (lotSize <= 0 || slDistance <= 0 || tpDistance <= 0) {
       Log("ExecuteStrategy: Computed invalid parameters.", LOG_ERROR);
       return false;
    }
-
-   int orderType = (marketSentiment >= 0.5) ? OP_BUY : OP_SELL;
-   double price = (orderType == OP_BUY) ? Ask : Bid;
-
-   // Ensure SL/TP are properly positioned relative to price
-   if (orderType == OP_BUY) {
-      if (sl >= price) sl = price - (10 * Point);
-      if (tp <= price) tp = price + (20 * Point);
-   } else { // OP_SELL
-      if (sl <= price) sl = price + (10 * Point);
-      if (tp >= price) tp = price - (20 * Point);
-   }
-
-   // Final validation of SL/TP
-   if ((orderType == OP_BUY && (sl >= price || tp <= price)) ||
-       (orderType == OP_SELL && (sl <= price || tp >= price))) {
-      Log("ExecuteStrategy: Price conditions invalid. OrderType=" + ((orderType == OP_BUY) ? "BUY" : "SELL") +
-          ", Price=" + DoubleToString(price, Digits()) +
-          ", SL=" + DoubleToString(sl, Digits()) +
-          ", TP=" + DoubleToString(tp, Digits()), LOG_ERROR);
+   
+   // Decide order type using dead zone and trend confirmation
+   double trendSignal = GetTrendFollowingSignal(); // +1 bullish, -1 bearish
+   int orderType;
+   if (marketSentiment > 0.55 || (marketSentiment >= 0.45 && trendSignal > 0))
+      orderType = OP_BUY;
+   else if (marketSentiment < 0.45 || (marketSentiment <= 0.55 && trendSignal < 0))
+      orderType = OP_SELL;
+   else {
+      Log("ExecuteStrategy: Neutral market conditions (sentiment=" + DoubleToString(marketSentiment,2) +
+          ", trendSignal=" + DoubleToString(trendSignal,1) + "). No trade executed.", LOG_INFO);
       return false;
    }
-
+   
+   // Determine the appropriate pip value. For USDJPY, if MODE_DIGITS is 3 or 5, then one pip = 0.01.
+   int digits = (int)MarketInfo(Symbol(), MODE_DIGITS);
+   double pip;
+   if(digits == 3 || digits == 5)
+      pip = Point * 10;
+   else
+      pip = Point;
+      
+   double AskPrice = Ask;
+   double BidPrice = Bid;
+   double minStopLevel = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
+   
+   // Convert SL and TP distances into absolute price levels
+   double absSL, absTP;
+   if (orderType == OP_BUY) {
+      absSL = AskPrice - (slDistance * pip);
+      absTP = AskPrice + (tpDistance * pip);
+      // Ensure for BUY orders: SL < Bid and TP > Ask
+      if ((BidPrice - absSL) < (minStopLevel + 5 * Point)) {
+         absSL = BidPrice - (minStopLevel + 5 * Point);
+         Log("ExecuteStrategy: Adjusted BUY SL to " + DoubleToString(absSL, Digits()), LOG_DEBUG);
+      }
+      if ((absTP - AskPrice) < (minStopLevel + 5 * Point)) {
+         absTP = AskPrice + (minStopLevel + 5 * Point);
+         Log("ExecuteStrategy: Adjusted BUY TP to " + DoubleToString(absTP, Digits()), LOG_DEBUG);
+      }
+   } else { // SELL order
+      absSL = BidPrice + (slDistance * pip);
+      absTP = BidPrice - (tpDistance * pip);
+      // Ensure for SELL orders: SL > Ask and TP < Bid
+      if ((absSL - AskPrice) < (minStopLevel + 5 * Point)) {
+         absSL = AskPrice + (minStopLevel + 5 * Point);
+         Log("ExecuteStrategy: Adjusted SELL SL to " + DoubleToString(absSL, Digits()), LOG_DEBUG);
+      }
+      if ((BidPrice - absTP) < (minStopLevel + 5 * Point)) {
+         absTP = BidPrice - (minStopLevel + 5 * Point);
+         Log("ExecuteStrategy: Adjusted SELL TP to " + DoubleToString(absTP, Digits()), LOG_DEBUG);
+      }
+   }
+   
+   // Final validation: for BUY orders, SL < Bid and TP > Ask; for SELL orders, SL > Ask and TP < Bid.
+   if ((orderType == OP_BUY && (absSL >= BidPrice || absTP <= AskPrice)) ||
+       (orderType == OP_SELL && (absSL <= AskPrice || absTP >= BidPrice))) {
+      Log("ExecuteStrategy: Final price conditions invalid. OrderType=" + ((orderType == OP_BUY) ? "BUY" : "SELL") +
+          ", Price=" + DoubleToString((orderType == OP_BUY ? AskPrice : BidPrice), Digits()) +
+          ", SL=" + DoubleToString(absSL, Digits()) +
+          ", TP=" + DoubleToString(absTP, Digits()), LOG_ERROR);
+      return false;
+   }
+   
    int slippage = Slippage;
    int ticket = -1;
    int maxRetries = 3;
    for (int attempt = 0; attempt < maxRetries; attempt++) {
-      ticket = OrderSend(Symbol(), orderType, lotSize, price, slippage, sl, tp, "FlexEA Order", MagicNumber, 0, clrBlue);
+      ticket = OrderSend(Symbol(), orderType, lotSize, (orderType == OP_BUY ? AskPrice : BidPrice), slippage, absSL, absTP, "FlexEA Order", MagicNumber, 0, clrBlue);
       if (ticket >= 0) break;
       int errorCode = GetLastError();
-      Log("ExecuteStrategy: OrderSend attempt " + IntegerToString(attempt+1) +
+      Log("ExecuteStrategy: OrderSend attempt " + IntegerToString(attempt + 1) +
           " failed. Error: " + IntegerToString(errorCode), LOG_WARNING);
-      Sleep(500); // Wait before retrying
-      slippage += 1; // Optionally adjust slippage for next attempt
+      Sleep(500);
+      slippage++; // Adjust slippage for next attempt
    }
    if (ticket < 0) {
       Log("ExecuteStrategy: All order send attempts failed.", LOG_ERROR);
       return false;
    }
-
+   
    Log("ExecuteStrategy: Order executed successfully. Ticket: " + IntegerToString(ticket) +
-       " Type: " + ((orderType == OP_BUY) ? "Buy" : "Sell") +
-       " LotSize: " + DoubleToString(lotSize,2), LOG_INFO);
+       ", Type: " + ((orderType == OP_BUY) ? "Buy" : "Sell") +
+       ", LotSize: " + DoubleToString(lotSize,2) +
+       ", SL=" + DoubleToString(absSL, Digits()) +
+       ", TP=" + DoubleToString(absTP, Digits()), LOG_INFO);
    return true;
 }
 
@@ -9347,43 +9386,42 @@ bool IsTotalRiskWithinLimits(){
 //------------------------------------------------------------------
 // Execute all strategies with risk and equity checks
 //------------------------------------------------------------------
-bool ExecuteAllStrategies(){
-   // Check if maximum open orders limit has been reached before executing further strategies
+bool ExecuteAllStrategies() {
+   // Check open orders before executing any new strategy
    if (OrdersTotal() >= MaxOpenOrders) {
-      Log("ExecuteAllStrategies: Max open orders reached (" + IntegerToString(MaxOpenOrders) + "). Skipping execution of new strategies.", LOG_INFO);
+      Log("ExecuteAllStrategies: Max open orders reached (" + IntegerToString(MaxOpenOrders) + "). Skipping strategy execution.", LOG_INFO);
       return false;
    }
    
-   // If any pre-check fails, exit early.
+   // Pre-checks: equity, risk, and trade permissions
    if (ManageEquity(0.9, 1.0, 5.0, 60))
       return false;
    if (!PerformRiskChecks())
       return false;
    if (!IsTradeAllowed())
       return false;
-      
+   
    int sl = 0, tp = 0;
    DetermineDynamicSLTP(sl, tp);
    double equity = AccountEquity();
    if (sl <= 0 || tp <= 0 || equity <= 0)
       return false;
-      
-   // Validate lot size based on current equity and risk adjustments.
+   
    double lotSize = ValidateAndAdjustLotSize(equity, AdjustRiskPercentage(equity), sl);
    if (lotSize <= 0)
       return false;
-      
+   
    TradingStrategy strategy = SelectAppropriateStrategy(0.5);
-   if (!strategy)
+   if (strategy == INVALID_STRATEGY)
       return false;
-      
+   
    if (!ExecuteStrategy(strategy, equity, CalculateDrawdownPercentage(), CalculateMarketSentiment()))
       return false;
-      
+   
    int ticket = OrderTicket();
    if (ticket <= 0 || !OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
       return false;
-      
+   
    return AdjustSLTP(ticket, sl, tp);
 }
 
@@ -10557,54 +10595,73 @@ string StrategyToString(TradingStrategy strategy){
 //------------------------------------------------------------------
 // Genetic Algorithm Optimization routine
 //------------------------------------------------------------------
-bool GeneticAlgorithmOptimization(int logFrequency = 5) {
+bool GeneticAlgorithmOptimization(int logFrequency = 5){
    const int populationSize = 20, generations = 50, topPerformers = populationSize / 2;
    double gridDistances[], riskPercentages[], fitnessScores[];
    ArrayResize(gridDistances, populationSize);
    ArrayResize(riskPercentages, populationSize);
    ArrayResize(fitnessScores, populationSize);
-
+   
    ToggleVerboseLogging(false);
-
-   if (!InitializePopulation(gridDistances, riskPercentages, populationSize)) {
+   
+   if (!InitializePopulation(gridDistances, riskPercentages, populationSize))   {
       Log("Error: Population initialization failed. Aborting optimization.", LOG_ERROR);
       ToggleVerboseLogging(true);
       return false;
    }
-
-   for (int gen = 0; gen < generations; gen++) {
+   
+   int gen, i;
+   for (gen = 0; gen < generations; gen++)   {
       if (logFrequency > 0 && (gen % logFrequency == 0 || gen == generations - 1))
          Log(StringFormat("Generation %d: Evaluating...", gen + 1), LOG_INFO);
-
+      
       double averageFitness = 0.0;
       EvaluateFitness(gridDistances, riskPercentages, fitnessScores, averageFitness, populationSize, gen);
-
+      
+      // Log fitnessScores for debugging
+      string fitnessStr = "Generation " + IntegerToString(gen + 1) + " fitness scores: ";
+      for (i = 0; i < populationSize; i++)      {
+         fitnessStr += DoubleToString(fitnessScores[i], 4);
+         if (i < populationSize - 1)
+            fitnessStr += ", ";
+      }
+      Log(fitnessStr, LOG_DEBUG);
+      
       // On first generation or if convergence has not been reached, sort and log top performers.
       if (gen == 0 || !CheckConvergence(fitnessScores))      {
          SortByFitness(gridDistances, riskPercentages, fitnessScores, topPerformers);
          LogTopPerformers(gridDistances, riskPercentages, fitnessScores, topPerformers, gen);
       }
-
+      
       // Perform crossover/mutation on the whole population.
       PerformCrossoverAndMutation(gridDistances, riskPercentages, topPerformers, populationSize);
-
-      if (CheckConvergence(fitnessScores)) {
+      
+      if (CheckConvergence(fitnessScores))      {
          Log(StringFormat("Optimization converged early at generation %d.", gen + 1), LOG_INFO);
          break;
       }
    }
-
+   
+   // Log final fitnessScores for debugging
+   string finalFitnessStr = "Final fitness scores: ";
+   for (i = 0; i < populationSize; i++)   {
+      finalFitnessStr += DoubleToString(fitnessScores[i], 4);
+      if (i < populationSize - 1)
+         finalFitnessStr += ", ";
+   }
+   Log(finalFitnessStr, LOG_DEBUG);
+   
    int bestIndex = GetBestIndividualIndex(fitnessScores, populationSize);
-   if (bestIndex < 0 || bestIndex >= populationSize) {
+   if (bestIndex < 0 || bestIndex >= populationSize)   {
       Log(StringFormat("Error: Best individual index is invalid (index=%d). Optimization failed.", bestIndex), LOG_ERROR);
       Log("Debug Info: Fitness scores were: " + ArrayToString(fitnessScores), LOG_DEBUG);
       ToggleVerboseLogging(true);
       return false;
    }
-
+   
    Log(StringFormat("Optimization Complete: Best GridDistance=%.2f, RiskPercentage=%.2f",
-         gridDistances[bestIndex], riskPercentages[bestIndex]), LOG_INFO);
-
+                     gridDistances[bestIndex], riskPercentages[bestIndex]), LOG_INFO);
+   
    ToggleVerboseLogging(true);
    return true;
 }
@@ -10763,22 +10820,25 @@ bool EvaluateFitness(const double &gridDistances[], const double &riskPercentage
 //------------------------------------------------------------------
 // Get Best Individual Index
 //------------------------------------------------------------------
-int GetBestIndividualIndex(const double &fitnessScores[], int populationSize) {
+int GetBestIndividualIndex(const double &fitnessScores[], int populationSize){
    int n = ArraySize(fitnessScores);
    if (populationSize <= 0 || n < populationSize)
       return -1;
       
    const double eps = 1e-9;
    double best = fitnessScores[0];
-   int bestIndex = 0, tieCount = 1;
+   int bestIndex = 0;
+   int tieCount = 1;
+   int i;
    
-   for (int i = 1; i < populationSize; i++) {
+   for (i = 1; i < populationSize; i++)   {
       double tol = MathMax(MathAbs(best), 1.0) * eps;
-      if (fitnessScores[i] > best + tol) {
+      if (fitnessScores[i] > best + tol)      {
          best = fitnessScores[i];
          bestIndex = i;
          tieCount = 1;
-      } else if (MathAbs(fitnessScores[i] - best) <= tol) {
+      }
+      else if (MathAbs(fitnessScores[i] - best) <= tol)      {
          tieCount++;
          if ((double)MathRand() / 32768.0 < 1.0 / tieCount)
             bestIndex = i;
