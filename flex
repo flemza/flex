@@ -1629,25 +1629,28 @@ bool IsParameterValid(ParameterType parameter) {
 bool IsPerformanceAcceptable() {
    static double lastPerformanceMetric = -1;
    datetime now = TimeCurrent();
-   // Ensure lastCheckedTime is defined and accessible (global variable)
    if (now - lastCheckedTime > 60) {
       lastPerformanceMetric = GetPerformanceMetric();
       lastCheckedTime = now;
    }
    Log("Performance Metric: " + DoubleToString(lastPerformanceMetric, 2), LOG_INFO);
    
-   // Check for finite and valid metric value
-   if (!isFinite(lastPerformanceMetric) || lastPerformanceMetric < 0) {
-      Log("Error: Invalid performance metric: " + DoubleToString(lastPerformanceMetric, 2), LOG_ERROR);
-      return false;
+   // Check for finite value
+   double acceptableLowerBound = -1.0;  // Define what you consider acceptable
+   if (!isFinite(lastPerformanceMetric) || lastPerformanceMetric < acceptableLowerBound) {
+    Log("Error: Performance metric out of acceptable range: " + DoubleToString(lastPerformanceMetric, 2), LOG_ERROR);
+    return false;
    }
    
+   // If negative values are acceptable, you might adjust your threshold logic.
+   // For example, if performance metrics can be negative, you may want to define a lower bound threshold.
    const double MIN_ACCEPTABLE_PERFORMANCE = 0.8;
    bool volatileMarket = IsMarketVolatile();
    double threshold = MIN_ACCEPTABLE_PERFORMANCE * (volatileMarket ? 1.5 : 1) - 0.01;
    
    Log("Market Volatile: " + (volatileMarket ? "Yes" : "No"), LOG_INFO);
-   Log("Checking performance metric: " + DoubleToString(lastPerformanceMetric, 2) + " against threshold: " + DoubleToString(threshold, 2), LOG_INFO);
+   Log("Checking performance metric: " + DoubleToString(lastPerformanceMetric, 2) +
+       " against threshold: " + DoubleToString(threshold, 2), LOG_INFO);
    
    return lastPerformanceMetric >= threshold;
 }
