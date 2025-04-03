@@ -198,43 +198,43 @@ ErrorRecord Blacklist[];
 //+------------------------------------------------------------------+
 //| Expert Advisor Initialization                                    |
 //+------------------------------------------------------------------+
-int OnInit(){
+int OnInit() {
    MathSrand((int)TimeLocal());
-   
+
    // Use MT4 timer function for periodic tasks
    EventSetTimer(60);
-   
-   if(!InitializeLogging("", false, true))
+
+   if (!InitializeLogging("", false, true))
       AddError("Logging setup failed.");
-      
+
    MarketInfoData marketInfo;
-   if(!InitializeMarketInfo(marketInfo))
+   if (!InitializeMarketInfo(marketInfo))
       AddError("Market info initialization failed.");
-      
-   if(!ResizeArrays(100))
+
+   if (!ResizeArrays(100))
       AddError("Array resizing failed.");
-      
+
    InitializeTradePerformanceArray();
    UpdateCachedIndicators();
-   
+
    // Select strategy using enhanced filtering that considers multiple indicators
    TradingStrategy selectedStrategy = EnhancedStrategySelection();
-   if(selectedStrategy == INVALID_STRATEGY)   {
+   if (selectedStrategy == INVALID_STRATEGY) {
       AddError("Invalid strategy selected. Defaulting to TrendFollowing.");
       selectedStrategy = TrendFollowing;
    }
-   else   {
+   else {
       Log("Initial strategy selected: " + StrategyToString(selectedStrategy), LOG_INFO);
    }
    currentStrategy = selectedStrategy; // Update global strategy variable
-   
+
    int optimizationResult = OptimizeStrategyParameters();
-   // Only log an error if optimization returns a nonzero code (assuming 0 means success)
-   if(optimizationResult != NO_ERROR)
+   // Log an error if optimization returns a nonzero code (0 means success)
+   if (optimizationResult != NO_ERROR)
       AddError("Strategy optimization failed. Using default settings. (Error Code: " + IntegerToString(optimizationResult) + ")");
    else
       Log("Strategy parameters optimized.", LOG_INFO);
-   
+
    Log("EA Initialized successfully.", LOG_INFO);
    return INIT_SUCCEEDED;
 }
@@ -1420,24 +1420,33 @@ bool ShouldUpdateIndicators(double threshold = 0.0010, int timeInterval = 0, boo
 // Optimizes strategy parameters
 //------------------------------------------------------------------
 OptimizationError OptimizeStrategyParameters() {
+   // Check if current strategy is valid
    if (currentStrategy < 0) {
-      Log("Invalid strategy index.", LOG_ERROR);
+      Log("OptimizeStrategyParameters error: Invalid strategy index (" + IntegerToString(currentStrategy) + ").", LOG_ERROR);
       return PARAMETER_ERROR;
    }
+   
+   // Validate strategy parameters
    if (!AreStrategyParametersValid(currentStrategy)) {
-      Log("Invalid strategy parameters, reverting to defaults.", LOG_ERROR);
+      Log("OptimizeStrategyParameters error: Strategy parameters invalid for strategy " + StrategyToString(currentStrategy) + ". Reverting to defaults.", LOG_ERROR);
       ResetStrategyParametersToDefault(currentStrategy);
       return PARAMETER_ERROR;
    }
+   
+   // Check performance criteria
    if (!IsPerformanceAcceptable()) {
-      Log("Performance error: " + GetPerformanceDetails(), LOG_WARNING);
+      string details = GetPerformanceDetails();
+      Log("OptimizeStrategyParameters error: Performance not acceptable. Details: " + details, LOG_WARNING);
       return PERFORMANCE_ERROR;
    }
+   
+   // Check overall optimization success
    if (!IsOptimizationSuccessful()) {
-      Log("Optimization error.", LOG_WARNING);
+      Log("OptimizeStrategyParameters error: Optimization process unsuccessful.", LOG_WARNING);
       return UNKNOWN_ERROR;
    }
-   Log("Optimization successful.", LOG_SUCCESS);
+   
+   Log("OptimizeStrategyParameters: Optimization successful for strategy " + StrategyToString(currentStrategy) + ".", LOG_SUCCESS);
    return NO_ERROR;
 }
 
@@ -1573,18 +1582,26 @@ bool IsParameterValid(ParameterType parameter) {
 bool IsPerformanceAcceptable() {
    static double lastPerformanceMetric = -1;
    datetime now = TimeCurrent();
+   // Ensure lastCheckedTime is defined and accessible (global variable)
    if (now - lastCheckedTime > 60) {
       lastPerformanceMetric = GetPerformanceMetric();
       lastCheckedTime = now;
    }
    Log("Performance Metric: " + DoubleToString(lastPerformanceMetric, 2), LOG_INFO);
+   
+   // Check for finite and valid metric value
    if (!isFinite(lastPerformanceMetric) || lastPerformanceMetric < 0) {
       Log("Error: Invalid performance metric: " + DoubleToString(lastPerformanceMetric, 2), LOG_ERROR);
       return false;
    }
+   
    const double MIN_ACCEPTABLE_PERFORMANCE = 0.8;
-   double threshold = MIN_ACCEPTABLE_PERFORMANCE * (IsMarketVolatile() ? 1.5 : 1) - 0.01;
+   bool volatileMarket = IsMarketVolatile();
+   double threshold = MIN_ACCEPTABLE_PERFORMANCE * (volatileMarket ? 1.5 : 1) - 0.01;
+   
+   Log("Market Volatile: " + (volatileMarket ? "Yes" : "No"), LOG_INFO);
    Log("Checking performance metric: " + DoubleToString(lastPerformanceMetric, 2) + " against threshold: " + DoubleToString(threshold, 2), LOG_INFO);
+   
    return lastPerformanceMetric >= threshold;
 }
 
@@ -10786,32 +10803,52 @@ void QuickSortIndices(int &indices[], double &fitnessScores[], int left, int rig
 // Evaluate Fitness: Uses updated Backtest (with output profit) to assign fitness scores.
 //------------------------------------------------------------------
 bool EvaluateFitness(const double &gridDistances[], const double &riskPercentages[], double &fitnessScores[], double &averageFitness, int populationSize, int generation){
-   if (populationSize <= 0 ||
-       ArraySize(gridDistances) < populationSize ||
-       ArraySize(riskPercentages) < populationSize ||
-       ArraySize(fitnessScores) < populationSize)   {
-      Log("EvaluateFitness error: Invalid input parameters or insufficient array sizes.", LOG_ERROR);
+   // Validate population size
+   if (populationSize <= 0) {
+      Log("EvaluateFitness error: Invalid population size.", LOG_ERROR);
       return false;
    }
-   
+
+   // Validate array sizes
+   int gridSize    = ArraySize(gridDistances);
+   int riskSize    = ArraySize(riskPercentages);
+   int fitnessSize = ArraySize(fitnessScores);
+
+   if (gridSize < populationSize || riskSize < populationSize || fitnessSize < populationSize) {
+      Log(StringFormat("EvaluateFitness error: Array size mismatch. gridDistances: %d, riskPercentages: %d, fitnessScores: %d, Expected: %d", 
+                        gridSize, riskSize, fitnessSize, populationSize), LOG_ERROR);
+      return false;
+   }
+
    Log(StringFormat("Gen %d: Evaluating fitness...", generation + 1), LOG_INFO);
    averageFitness = 0.0;
-   
    double profit = 0.0;
-   for (int i = 0; i < populationSize; i++)   {
-      // If backtest returns false, profit is assumed 0.0.
-      if(Backtest(gridDistances[i], riskPercentages[i], profit))
-         fitnessScores[i] = MathMax(profit, 0.0);
-      else
+
+   for (int i = 0; i < populationSize; i++) {
+      // Validate individual parameters before backtesting
+      if (IsNaN(gridDistances[i]) || IsNaN(riskPercentages[i])) {
+         Log(StringFormat("EvaluateFitness error: NaN detected at index %d. gridDistances=%.5f, riskPercentages=%.5f", 
+                           i, gridDistances[i], riskPercentages[i]), LOG_ERROR);
          fitnessScores[i] = 0.0;
-         
+         continue;
+      }
+
+      // If Backtest returns false, profit is assumed 0.0.
+      if (Backtest(gridDistances[i], riskPercentages[i], profit))
+         fitnessScores[i] = MathMax(profit, 0.0);
+      else {
+         Log(StringFormat("EvaluateFitness warning: Backtest failed at index %d, using fitness=0.0", i), LOG_WARNING);
+         fitnessScores[i] = 0.0;
+      }
+
       averageFitness += fitnessScores[i];
-      
+
       #ifdef DEBUG_MODE
          Log(StringFormat("Gen %d, Individual %d: Fitness=%.5f", generation + 1, i, fitnessScores[i]), LOG_DEBUG);
       #endif
    }
-   
+
+   // Calculate average fitness
    averageFitness /= populationSize;
    Log(StringFormat("Gen %d: Average Fitness=%.5f", generation + 1, averageFitness), LOG_INFO);
    return true;
