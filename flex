@@ -271,13 +271,13 @@ bool InitializeLogging(string customLogFileName = "", bool append = false, bool 
 bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", int maxRetries = 3, int retryDelay = 500, int maxDelay = 5000, int timeoutSeconds = 10){
    // Validate input parameters for market info retrieval
    if(maxRetries <= 0 || retryDelay <= 0 || maxDelay <= 0 || retryDelay > maxDelay)   {
-      Log("Invalid market info parameters.", LOG_ERROR);
+      LogError(0, "Invalid market info parameters.");
       return false;
    }
    
    string symbolToUse = (StringLen(inputSymbol) == 0) ? Symbol() : inputSymbol;
    if(!SymbolSelect(symbolToUse, true))   {
-      Log("Invalid symbol: " + symbolToUse, LOG_ERROR);
+      LogError("Invalid symbol: " + symbolToUse, 0);
       return false;
    }
    
@@ -423,6 +423,16 @@ TradingStrategy SelectCombinedStrategy(){
       return RangeBound;
 }
 
+//+------------------------------------------------------------------+
+//| NormalizeValue: Normalize a value relative to a reference value  |
+//+------------------------------------------------------------------+
+double NormalizeValue(double value, double reference){
+   // Prevent division by zero. If reference is zero, return 0 (or handle as needed)
+   if(MathAbs(reference) < EPSILON)
+      return 0.0;
+   return value / reference;
+}
+
 // Returns a trend following signal (-1 to +1) based on dual EMAs.
 // A positive value indicates bullish conditions; a negative value indicates bearish.
 double GetTrendFollowingSignal(){
@@ -430,21 +440,20 @@ double GetTrendFollowingSignal(){
    int slowPeriod = 50;
    double fastEMA = iMA(Symbol(), Timeframe, fastPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
    double slowEMA = iMA(Symbol(), Timeframe, slowPeriod, 0, MODE_EMA, PRICE_CLOSE, 0);
-   double diff = fastEMA - slowEMA;
-   double normDiff = diff / Bid;
+   double normDiff = NormalizeValue(fastEMA - slowEMA, Bid);
    double threshold = 0.001;
-   
    double signal = 0.0;
+   
    if(normDiff > threshold)
       signal = 1.0;
    else if(normDiff < -threshold)
       signal = -1.0;
-   
-   Log("GetTrendFollowingSignal: fastEMA=" + DoubleToString(fastEMA,2) +
-       ", slowEMA=" + DoubleToString(slowEMA,2) +
-       ", normDiff=" + DoubleToString(normDiff,4) +
-       ", signal=" + DoubleToString(signal,1), LOG_DEBUG);
-   
+      
+   LogMessage(LOG_DEBUG, "GetTrendFollowingSignal: fastEMA=" + DoubleToString(fastEMA,2) + 
+              ", slowEMA=" + DoubleToString(slowEMA,2) + 
+              ", normDiff=" + DoubleToString(normDiff,4) + 
+              ", signal=" + DoubleToString(signal,1));
+              
    return signal;
 }
 
@@ -1377,22 +1386,60 @@ void AddError(string message, int errorCode=-1){
    Log(fullMessage, LOG_ERROR);
 }
 
+//+------------------------------------------------------------------+
+//| Helper: FormatContext - Returns a formatted context string       |
+//+------------------------------------------------------------------+
+string FormatContext(int strategyIndex, int parameter, double value) {
+   string context = "";
+   if(strategyIndex >= 0)
+      context += " | StrategyIndex: " + IntegerToString(strategyIndex);
+   if(parameter >= 0)
+      context += " | Parameter: " + IntegerToString(parameter);
+   if(MathAbs(value) > EPSILON)  // Using EPSILON to compare floating point numbers
+      context += " | Value: " + DoubleToString(value, 2);
+   return context;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: FormatErrorMessage - Combines time, error code, message, |
+//| and context into a single formatted message                      |
+//+------------------------------------------------------------------+
+string FormatErrorMessage(int errorCode, string message, string context, int maxLength) {
+   // Ensure message is not empty
+   if(StringLen(message) == 0)
+      message = "Missing error message in log call.";
+   else
+      message = StringTrim(message);
+
+   string timeStr = TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+   string fullMessage = StringFormat("[%s] Error: %d - %s%s", 
+                                     timeStr, errorCode, message, 
+                                     (StringLen(context) > 0 ? " Context: " + context : ""));
+   return StringSubstr(fullMessage, 0, maxLength);
+}
+
 // Log the error with the error code and message
-bool LogError(int errorCode, string message, int logLevel = LOG_ERROR, int strategyIndex = -1, ParameterType parameter = -1, double value = 0.0, int maxLength = MAX_LOG_MESSAGE_LENGTH) {
-   if (logLevel < LOG_ERROR || logLevel > LOG_DEBUG || errorCode < 0) {
+bool LogError(int errorCode, string message, int logLevel = LOG_ERROR, int strategyIndex = -1, int parameter = -1, double value = 0.0, int maxLength = MAX_LOG_MESSAGE_LENGTH){
+   // Validate log level and error code
+   if(logLevel < LOG_ERROR || logLevel > LOG_DEBUG || errorCode < 0) {
       Print("Invalid log level or error code. LogError aborted.");
       return false;
    }
-   string context = "";
-   if (strategyIndex >= 0) context += " | StrategyIndex: " + IntegerToString(strategyIndex);
-   if (parameter >= 0) context += " | Parameter: " + IntegerToString(parameter);
-   if (value != 0.0) context += " | Value: " + DoubleToString(value, 2);
-   message = (StringLen(message) > 0) ? StringTrim(message) : "Missing error message in log call.";
-   string fullMessage = StringFormat("[%s] Error: %d - %s%s", TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), errorCode, message, (context != "") ? " Context: " + context : "");
-   Log(StringSubstr(fullMessage, 0, maxLength), logLevel);
+
+   // Format context and full error message
+   string context = FormatContext(strategyIndex, parameter, value);
+   string fullMessage = FormatErrorMessage(errorCode, message, context, maxLength);
+
+   // Log the message using the central Log function
+   Log(fullMessage, logLevel);
+
+   // Log to error log file (using a static file handle)
    static int fileHandle = INVALID_HANDLE;
-   if (fileHandle == INVALID_HANDLE) fileHandle = FileOpen("error_log.txt", FILE_WRITE | FILE_TXT);
-   if (fileHandle != INVALID_HANDLE) FileWrite(fileHandle, StringSubstr(fullMessage, 0, maxLength));
+   if(fileHandle == INVALID_HANDLE)
+      fileHandle = FileOpen("error_log.txt", FILE_WRITE | FILE_TXT);
+   if(fileHandle != INVALID_HANDLE)
+      FileWrite(fileHandle, fullMessage);
+
    return true;
 }
 
