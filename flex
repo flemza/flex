@@ -207,47 +207,39 @@ ErrorRecord Blacklist[];
 //| Expert Advisor Initialization                                    |
 //+------------------------------------------------------------------+
 int OnInit() {
-   MathSrand((int)TimeLocal());
-   // Use MT4 timer function for periodic tasks
-   EventSetTimer(60);
-   if (!InitializeLogging("", false, true))
-      AddError("Logging setup failed.");
-   MarketInfoData marketInfo;
-   if (!InitializeMarketInfo(marketInfo))
-      AddError("Market info initialization failed.");
-   if (!ResizeArrays(100))
-      AddError("Array resizing failed.");
-   InitializeTradePerformanceArray();
-   UpdateCachedIndicators();
-   
-   // Initialize trend filter
-   if(UseHigherTimeframeTrendFilter) {
-      // Force initial calculation of trend direction
-      int initialTrend = GetCachedTrendDirection();
-      string trendText = "NEUTRAL";
-      if(initialTrend > 0) trendText = "BULLISH";
-      if(initialTrend < 0) trendText = "BEARISH";
-      Log("Higher Timeframe Trend Filter enabled. Initial trend: " + trendText, LOG_INFO);
-   }
-   
-   // Select strategy using enhanced filtering that considers multiple indicators
-   TradingStrategy selectedStrategy = EnhancedStrategySelection();
-   if (selectedStrategy == INVALID_STRATEGY) {
-      AddError("Invalid strategy selected. Defaulting to TrendFollowing.");
-      selectedStrategy = TrendFollowing;
-   }
-   else {
-      Log("Initial strategy selected: " + StrategyToString(selectedStrategy), LOG_INFO);
-   }
-   currentStrategy = selectedStrategy; // Update global strategy variable
-   int optimizationResult = OptimizeStrategyParameters();
-   // Log an error if optimization returns a nonzero code (0 means success)
-   if (optimizationResult != NO_ERROR)
-      AddError("Strategy optimization failed. Using default settings. (Error Code: " + IntegerToString(optimizationResult) + ")");
-   else
-      Log("Strategy parameters optimized.", LOG_INFO);
-   Log("EA Initialized successfully.", LOG_INFO);
-   return INIT_SUCCEEDED;
+    MathSrand((int)TimeLocal());
+    EventSetTimer(60);
+    if (!InitializeLogging("", false, true))
+        AddError("Logging setup failed.");
+    MarketInfoData marketInfo;
+    if (!InitializeMarketInfo(marketInfo))
+        AddError("Market info initialization failed.");
+    if (!ResizeArrays(100))
+        AddError("Array resizing failed.");
+    InitializeTradePerformanceArray();
+    UpdateCachedIndicators();
+    if (UseHigherTimeframeTrendFilter) {
+        int initialTrend = GetCachedTrendDirection();
+        string trendText = "NEUTRAL";
+        if (initialTrend > 0) trendText = "BULLISH";
+        if (initialTrend < 0) trendText = "BEARISH";
+        Log("Higher Timeframe Trend Filter enabled. Initial trend: " + trendText, LOG_INFO);
+    }
+    TradingStrategy selectedStrategy = EnhancedStrategySelection();
+    if (selectedStrategy == INVALID_STRATEGY) {
+        AddError("Invalid strategy selected. Defaulting to TrendFollowing.");
+        selectedStrategy = TrendFollowing;
+    } else {
+        Log("Initial strategy selected: " + StrategyToString(selectedStrategy), LOG_INFO);
+    }
+    currentStrategy = selectedStrategy;
+    int optimizationResult = OptimizeStrategyParameters();
+    if (optimizationResult != NO_ERROR)
+        AddError("Strategy optimization failed. Using default settings. (Error Code: " + IntegerToString(optimizationResult) + ")");
+    else
+        Log("Strategy parameters optimized.", LOG_INFO);
+    Log("EA Initialized successfully.", LOG_INFO);
+    return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
@@ -323,92 +315,82 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
 //+------------------------------------------------------------------+
 //| OnTick Event - Updated with trend filter display                  |
 //+------------------------------------------------------------------+
-void OnTick(){
-   // Update indicators and market state from the modular indicator manager
-   UpdateIndicatorCache(Symbol(), Timeframe);
-   
-   // Display trend information
-   if(UseHigherTimeframeTrendFilter)   {
-      DisplayTrendInfo();
-   }
-   
-   // Use weighted signal fusion to select strategy
-   TradingStrategy strategy = SelectCombinedStrategy();
-   if(strategy == INVALID_STRATEGY)   {
-      Log("No valid combined strategy selected. Aborting tick execution.", LOG_ERROR);
-      return;
-   }
-   
-   // Calculate current market parameters
-   double equity = AccountEquity();
-   double drawdown = CalculateDrawdownPercentage();
-   double sentiment = CalculateMarketSentiment();
-   
-   // Attempt to execute the selected strategy - now includes trend filter logic
-   if(!ExecuteStrategy(strategy, equity, drawdown, sentiment))   {
-      int error = GetLastError();
-      if(error != 0)
-         EnhancedLogError("Execution error for strategy " + StrategyToString(strategy), error, Symbol());
-      else
-         Log("ExecuteStrategy returned false for strategy " + StrategyToString(strategy) + " with error code 0. Check internal conditions.", LOG_WARNING);
-      return;
-   }
-   
-   // Manage existing orders with risk hedging (partial exits)
-   PartialExitCheck();
-   
-   // Update order management functions
-   UpdateStopLossTakeProfit();
-   UpdateTrailingStop();
-   MoveStopToBreakEven();
+void OnTick() {
+    // Update indicators and market state from the modular indicator manager
+    UpdateIndicatorCache(Symbol(), Timeframe);
+
+    // Display trend information
+    if (UseHigherTimeframeTrendFilter) {
+        DisplayTrendInfo();
+    }
+
+    // Use weighted signal fusion to select strategy
+    TradingStrategy strategy = SelectCombinedStrategy();
+    if (strategy == INVALID_STRATEGY) {
+        Log("No valid combined strategy selected. Aborting tick execution.", LOG_ERROR);
+        return;
+    }
+
+    // Calculate current market parameters
+    double equity = AccountEquity();
+    double drawdown = CalculateDrawdownPercentage();
+    double sentiment = CalculateMarketSentiment();
+
+    // Attempt to execute the selected strategy - now includes anomaly detection
+    if (!ExecuteStrategy(strategy, equity, drawdown, sentiment)) {
+        int error = GetLastError();
+        if (error != 0)
+            EnhancedLogError("Execution error for strategy " + StrategyToString(strategy), error, Symbol());
+        else
+            Log("ExecuteStrategy returned false for strategy " + StrategyToString(strategy) + " with error code 0. Check internal conditions.", LOG_WARNING);
+        return;
+    }
+
+    // Manage existing orders with risk hedging (partial exits)
+    PartialExitCheck();
+
+    // Update order management functions
+    UpdateStopLossTakeProfit();
+    UpdateTrailingStop();
+    MoveStopToBreakEven();
 }
 
 //+------------------------------------------------------------------+
 //| OnTimer Event - Updated with adaptive scheduling and strategy    |
 //+------------------------------------------------------------------+
-void OnTimer(){
-   static datetime lastCheck = 0, lastOptionalTaskRun = 0, lastOptimizationTime = 0;
-   datetime currentTime = TimeCurrent();
-   
-   // Execute timer tasks only if the performance interval has elapsed
-   if(currentTime - lastCheck < performanceCheckInterval)
-      return;
-   lastCheck = currentTime;
-   
-   // Exit if risk limits or recovery mode conditions are met
-   if(CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage()))   {
-      Log("Risk limits exceeded or recovery mode active. Trading disabled.", LOG_WARNING);
-      return;
-   }
-   
-   // Process open orders and update market data with modularized functions
-   if(HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK)   {
-      Log("Error handling open orders.", LOG_ERROR);
-      return;
-   }
-   UpdateCachedIndicators();
-   cachedDrawdownPercentage = CalculateDrawdownPercentage();
-   cachedMarketSentiment = CalculateMarketSentiment();
-   AdjustSLTP();
-   EvaluateStrategyPerformance();
-   ExecuteAllStrategies();
-   
-   // Optimize strategy parameters every 15 minutes
-   const int optimizationCooldown = 900;
-   if(currentTime - lastOptimizationTime >= optimizationCooldown)   {
-      Log("Starting strategy optimization process.", LOG_INFO);
-      ResetAndOptimizeStrategy();
-      lastOptimizationTime = currentTime;
-   }
-   
-   // Log performance metrics and execute optional tasks on a longer interval
-   if(ShouldLogPerformanceMetrics(LOG_INFO))
-      LogPerformanceMetrics();
-   if(currentTime - lastOptionalTaskRun >= 3600)   {
-      RunOptionalTasks();
-      lastOptionalTaskRun = currentTime;
-   }
-   Log("OnTimer tasks executed successfully.", LOG_INFO);
+void OnTimer() {
+    static datetime lastCheck = 0, lastOptionalTaskRun = 0, lastOptimizationTime = 0;
+    datetime currentTime = TimeCurrent();
+    if (currentTime - lastCheck < performanceCheckInterval)
+        return;
+    lastCheck = currentTime;
+    if (CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage())) {
+        Log("Risk limits exceeded or recovery mode active. Trading disabled.", LOG_WARNING);
+        return;
+    }
+    if (HandleExistingOrders(MarginThreshold, EnablePyramiding, EnableScalingOut, 0.1) != STATUS_OK) {
+        Log("Error handling open orders.", LOG_ERROR);
+        return;
+    }
+    UpdateCachedIndicators();
+    cachedDrawdownPercentage = CalculateDrawdownPercentage();
+    cachedMarketSentiment = CalculateMarketSentiment();
+    AdjustSLTP();
+    EvaluateStrategyPerformance();
+    ExecuteAllStrategies();
+    const int optimizationCooldown = 900;
+    if (currentTime - lastOptimizationTime >= optimizationCooldown) {
+        Log("Starting strategy optimization process.", LOG_INFO);
+        ResetAndOptimizeStrategy();
+        lastOptimizationTime = currentTime;
+    }
+    if (ShouldLogPerformanceMetrics(LOG_INFO))
+        LogPerformanceMetrics();
+    if (currentTime - lastOptionalTaskRun >= 3600) {
+        RunOptionalTasks();
+        lastOptionalTaskRun = currentTime;
+    }
+    Log("OnTimer tasks executed successfully.", LOG_INFO);
 }
 
 //+------------------------------------------------------------------+
@@ -552,28 +534,107 @@ void DisplayTrendInfo(){
 //| SelectCombinedStrategy - fuse signals from multiple strategies     |
 //+------------------------------------------------------------------+
 TradingStrategy SelectCombinedStrategy(){
-   // Example weights for each strategy signal (these might be configurable)
-   double weightTrend = 0.4;
-   double weightReversion = 0.3;
-   double weightMomentum = 0.3;
-   
-   // Get individual strategy signals (these functions return a value between -1 and +1)
-   double signalTrend = GetTrendFollowingSignal();      // e.g., +1 for bullish, -1 for bearish
-   double signalReversion = GetMeanReversionSignal();
-   double signalMomentum = GetMomentumSignal();
-   
-   // Weighted sum of signals
-   double combinedSignal = (signalTrend * weightTrend) +
-                           (signalReversion * weightReversion) +
-                           (signalMomentum * weightMomentum);
-   
-   // Determine strategy based on combined signal
-   if(combinedSignal > 0.3)
-      return TrendFollowing;
-   else if(combinedSignal < -0.3)
-      return CounterTrend;
-   else
-      return RangeBound;
+    // Example weights for each strategy signal
+    double weightTrend = 0.3;
+    double weightReversion = 0.2;
+    double weightMomentum = 0.2;
+    double weightBreakout = 0.2;
+    double weightGrid = 0.1;
+    
+    // Get individual strategy signals (these functions return a value between -1 and +1)
+    double signalTrend = GetTrendFollowingSignal();      // e.g., +1 for bullish, -1 for bearish
+    double signalReversion = GetMeanReversionSignal();
+    double signalMomentum = GetMomentumSignal();
+    double signalBreakout = GetBreakoutSignal();
+    double signalGrid = GetGridSignal();
+    
+    // Weighted sum of signals
+    double combinedSignal = (signalTrend * weightTrend) +
+                            (signalReversion * weightReversion) +
+                            (signalMomentum * weightMomentum) +
+                            (signalBreakout * weightBreakout) +
+                            (signalGrid * weightGrid);
+    
+    // Determine strategy based on combined signal
+    if (combinedSignal > 0.3)
+        return TrendFollowing;
+    else if (combinedSignal < -0.3)
+        return CounterTrend;
+    else if (combinedSignal > 0.1 && combinedSignal <= 0.3)
+        return Breakout;
+    else if (combinedSignal < -0.1 && combinedSignal >= -0.3)
+        return Grid;
+    else
+        return RangeBound;
+}
+
+// Returns a breakout signal (-1 to +1) based on price breaking resistance/support levels.
+double GetBreakoutSignal() {
+    double resistance = iHigh(Symbol(), Timeframe, iHighest(Symbol(), Timeframe, MODE_HIGH, 20, 0));
+    double support = iLow(Symbol(), Timeframe, iLowest(Symbol(), Timeframe, MODE_LOW, 20, 0));
+    double signal = 0.0;
+    
+    if (Ask > resistance)
+        signal = 1.0;  // Bullish breakout
+    else if (Bid < support)
+        signal = -1.0; // Bearish breakout
+
+    return signal;
+}
+
+// Returns a grid trading signal (-1 to +1) based on price levels within a defined grid.
+double GetGridSignal() {
+    double gridSize = 100; // Example grid size in points
+    double currentPrice = Bid;
+    double gridLevel = MathFloor(currentPrice / gridSize) * gridSize;
+    double signal = 0.0;
+
+    if (currentPrice > gridLevel + gridSize * 0.5)
+        signal = 1.0;  // Buy signal
+    else if (currentPrice < gridLevel + gridSize * 0.5)
+        signal = -1.0; // Sell signal
+
+    return signal;
+}
+
+// Returns a volume-based filter signal (-1 to +1).
+// A positive value indicates high volume supporting the trend; a negative value indicates low volume.
+double GetVolumeFilterSignal() {
+    int volumePeriod = 20;
+    double avgVolume = iVolume(Symbol(), Timeframe, 0);
+    for (int i = 1; i < volumePeriod; i++) {
+        avgVolume += iVolume(Symbol(), Timeframe, i);
+    }
+    avgVolume /= volumePeriod;
+
+    double currentVolume = iVolume(Symbol(), Timeframe, 0);
+    double volumeThreshold = 1.5; // Example threshold multiplier
+
+    if (currentVolume > avgVolume * volumeThreshold) {
+        return 1.0;  // High volume
+    } else if (currentVolume < avgVolume / volumeThreshold) {
+        return -1.0; // Low volume
+    }
+    return 0.0;
+}
+
+// Returns a higher timeframe confirmation signal (-1 to +1).
+// A positive value indicates alignment with higher timeframe trend; a negative value indicates misalignment.
+double GetHigherTimeframeConfirmationSignal() {
+    int higherTF = GetHigherTimeframe(Period());
+    int ma_fast_period = 50;
+    int ma_slow_period = 200;
+
+    double ma_fast = iMA(Symbol(), higherTF, ma_fast_period, 0, MODE_EMA, PRICE_CLOSE, 0);
+    double ma_slow = iMA(Symbol(), higherTF, ma_slow_period, 0, MODE_EMA, PRICE_CLOSE, 0);
+    double currentClose = iClose(Symbol(), Timeframe, 0);
+
+    if (ma_fast > ma_slow && currentClose > ma_fast) {
+        return 1.0;  // Bullish confirmation
+    } else if (ma_fast < ma_slow && currentClose < ma_fast) {
+        return -1.0; // Bearish confirmation
+    }
+    return 0.0;
 }
 
 //+------------------------------------------------------------------+
@@ -5750,6 +5811,11 @@ double SimulateGridTrading(double gridDistance, double riskPercentage, double sl
 // Execute Trading Strategy with dynamic risk management and order retry
 //------------------------------------------------------------------
 bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, double marketSentiment) {
+   // Check for market anomalies before executing the strategy
+    if (DetectFlashCrash() || DetectAbnormalVolatility() || DetectUnexpectedGap()) {
+        Log("Market anomaly detected. Halting trading to avoid potential risks.", LOG_WARNING);
+        return false;
+    }
    // Check max open orders before proceeding
    if (OrdersTotal() >= MaxOpenOrders) {
       Log("ExecuteStrategy: Max open orders reached (" + IntegerToString(MaxOpenOrders) + "). No new orders placed.", LOG_INFO);
@@ -5947,6 +6013,33 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
        ", SL=" + DoubleToString(absSL, Digits()) +
        ", TP=" + DoubleToString(absTP, Digits()), LOG_INFO);
    return true;
+}
+
+// Detect flash crashes based on sudden large price drops within a short period
+bool DetectFlashCrash(double thresholdPercentage = 5.0, int periodSeconds = 60) {
+    double currentPrice = Bid;
+    double pastPrice = iClose(Symbol(), PERIOD_M1, periodSeconds / 60);
+    double priceChangePercentage = ((pastPrice - currentPrice) / pastPrice) * 100.0;
+
+    return priceChangePercentage >= thresholdPercentage;
+}
+
+// Detect abnormal volatility based on a significant increase in ATR
+bool DetectAbnormalVolatility(double thresholdMultiplier = 2.0) {
+    double currentATR = iATR(Symbol(), Timeframe, ATRPeriod, 0);
+    double pastATR = iATR(Symbol(), Timeframe, ATRPeriod, 1);
+    double atrChangeRatio = currentATR / pastATR;
+
+    return atrChangeRatio >= thresholdMultiplier;
+}
+
+// Detect unexpected gaps by comparing current price with the previous close price
+bool DetectUnexpectedGap(double thresholdPercentage = 3.0) {
+    double currentPrice = Bid;
+    double previousClose = iClose(Symbol(), PERIOD_D1, 1);
+    double gapPercentage = ((currentPrice - previousClose) / previousClose) * 100.0;
+
+    return MathAbs(gapPercentage) >= thresholdPercentage;
 }
 
 //+------------------------------------------------------------------+
