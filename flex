@@ -533,28 +533,34 @@ void DisplayTrendInfo(){
 //+------------------------------------------------------------------+
 //| SelectCombinedStrategy - fuse signals from multiple strategies     |
 //+------------------------------------------------------------------+
-TradingStrategy SelectCombinedStrategy(){
-    // Example weights for each strategy signal
-    double weightTrend = 0.3;
-    double weightReversion = 0.2;
-    double weightMomentum = 0.2;
-    double weightBreakout = 0.2;
+TradingStrategy SelectCombinedStrategy() {
+    // Example weights for each strategy signal (these might be configurable)
+    double weightTrend = 0.2;
+    double weightReversion = 0.15;
+    double weightMomentum = 0.15;
+    double weightBreakout = 0.1;
     double weightGrid = 0.1;
-    
+    double weightVolume = 0.15;
+    double weightHTF = 0.15;
+
     // Get individual strategy signals (these functions return a value between -1 and +1)
     double signalTrend = GetTrendFollowingSignal();      // e.g., +1 for bullish, -1 for bearish
     double signalReversion = GetMeanReversionSignal();
     double signalMomentum = GetMomentumSignal();
     double signalBreakout = GetBreakoutSignal();
     double signalGrid = GetGridSignal();
-    
+    double signalVolume = GetVolumeFilterSignal();
+    double signalHTF = GetHigherTimeframeConfirmationSignal();
+
     // Weighted sum of signals
     double combinedSignal = (signalTrend * weightTrend) +
                             (signalReversion * weightReversion) +
                             (signalMomentum * weightMomentum) +
                             (signalBreakout * weightBreakout) +
-                            (signalGrid * weightGrid);
-    
+                            (signalGrid * weightGrid) +
+                            (signalVolume * weightVolume) +
+                            (signalHTF * weightHTF);
+
     // Determine strategy based on combined signal
     if (combinedSignal > 0.3)
         return TrendFollowing;
