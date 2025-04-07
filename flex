@@ -55,6 +55,12 @@ enum TransactionCostError {COST_SUCCESS = 0, COST_TOO_LOW = 1, COST_TOO_HIGH = 2
 enum OptimizationResult {OPT_SUCCESS, OPT_TIMEOUT, OPT_FAILURE};
 
 input int    MagicNumber = 123456;             // Magic Number to identify orders
+input bool   UseHigherTimeframeTrendFilter = true;     // Use higher timeframe trend filter
+input bool   StrictTrendFilter = false;                // Only trade with the trend (no counter-trend)
+input bool   CounterTrendReducedLots = true;           // Reduce lot size for counter-trend trades
+input double CounterTrendLotMultiplier = 0.5;          // Lot size multiplier for counter-trend trades
+input int    HTF_FastMA = 50;                          // Higher TF fast MA period
+input int    HTF_SlowMA = 200;                         // Higher TF slow MA period
 input bool   EnablePyramiding = true;         // Enable scaling into winning trades
 input bool   EnableScalingOut = true;        // Enable scaling out of losing trades
 input double MaxDrawdown = 50;
@@ -86,6 +92,7 @@ const int INVALID_ORDER_TYPE = -1;
 const int ALERT_INTERVAL = 60, ALL_CLEAR_INTERVAL = 300, ESCALATION_THRESHOLD = 5;
 datetime lastLogTime = 0;  // Variable to store the last log time
 datetime lastIndicatorUpdateTime = 0;
+datetime lastTrendCheck = 0;
 double cachedATR;  
 double cachedFastMA;
 double cachedSlowMA;
@@ -117,6 +124,7 @@ int performanceCheckInterval = 60;  // Time interval in seconds for checking per
 int logFileHandle = -1;
 int tradeCooldown = 300;    // Minimum time in seconds between trades (e.g., 5 minutes)
 int currentLogLevel = LOG_LEVEL_ERROR; // Set log level to error by default
+int cachedTrendDirection = -99; // Invalid value to force initial calculation
 static datetime lastUpdateTime = 0;
 static datetime lastCheckedTime = 0;
 static int alertCount = 0;
@@ -170,7 +178,7 @@ struct TrendInfoConfig {bool isVerboseLoggingEnabled; double adxThreshold;};
 struct StrategyThreshold {TradingStrategy strategy; double threshold;};
 struct StrategyTP {string strategy; double multiplier;};
 struct StrategyPerformanceResult {double performance; bool error;};
-struct IndicatorCache {double atr; double rsi; double fastMA; double slowMA; double adx; double upperBand; double lowerBand; double bollingerWidth; double trendStrength; double macdMain; double macdSignal; datetime lastUpdate;};
+struct IndicatorCache {double atr; double rsi; double fastMA; double slowMA; double adx; double upperBand; double lowerBand; double bollingerWidth; double trendStrength; double macdMain; double macdSignal; int htfTrendDirection; datetime lastUpdate;};
 struct ErrorRecord {string symbol; int errorCount; datetime lastErrorTime;};
 
 double errorStack[];
@@ -200,23 +208,28 @@ ErrorRecord Blacklist[];
 //+------------------------------------------------------------------+
 int OnInit() {
    MathSrand((int)TimeLocal());
-
    // Use MT4 timer function for periodic tasks
    EventSetTimer(60);
-
    if (!InitializeLogging("", false, true))
       AddError("Logging setup failed.");
-
    MarketInfoData marketInfo;
    if (!InitializeMarketInfo(marketInfo))
       AddError("Market info initialization failed.");
-
    if (!ResizeArrays(100))
       AddError("Array resizing failed.");
-
    InitializeTradePerformanceArray();
    UpdateCachedIndicators();
-
+   
+   // Initialize trend filter
+   if(UseHigherTimeframeTrendFilter) {
+      // Force initial calculation of trend direction
+      int initialTrend = GetCachedTrendDirection();
+      string trendText = "NEUTRAL";
+      if(initialTrend > 0) trendText = "BULLISH";
+      if(initialTrend < 0) trendText = "BEARISH";
+      Log("Higher Timeframe Trend Filter enabled. Initial trend: " + trendText, LOG_INFO);
+   }
+   
    // Select strategy using enhanced filtering that considers multiple indicators
    TradingStrategy selectedStrategy = EnhancedStrategySelection();
    if (selectedStrategy == INVALID_STRATEGY) {
@@ -227,14 +240,12 @@ int OnInit() {
       Log("Initial strategy selected: " + StrategyToString(selectedStrategy), LOG_INFO);
    }
    currentStrategy = selectedStrategy; // Update global strategy variable
-
    int optimizationResult = OptimizeStrategyParameters();
    // Log an error if optimization returns a nonzero code (0 means success)
    if (optimizationResult != NO_ERROR)
       AddError("Strategy optimization failed. Using default settings. (Error Code: " + IntegerToString(optimizationResult) + ")");
    else
       Log("Strategy parameters optimized.", LOG_INFO);
-
    Log("EA Initialized successfully.", LOG_INFO);
    return INIT_SUCCEEDED;
 }
@@ -310,11 +321,16 @@ bool InitializeMarketInfo(MarketInfoData &marketInfo, string inputSymbol = "", i
 }
 
 //+------------------------------------------------------------------+
-//| OnTick Event - Updated with enhanced risk controls and logging   |
+//| OnTick Event - Updated with trend filter display                  |
 //+------------------------------------------------------------------+
 void OnTick(){
    // Update indicators and market state from the modular indicator manager
    UpdateIndicatorCache(Symbol(), Timeframe);
+   
+   // Display trend information
+   if(UseHigherTimeframeTrendFilter)   {
+      DisplayTrendInfo();
+   }
    
    // Use weighted signal fusion to select strategy
    TradingStrategy strategy = SelectCombinedStrategy();
@@ -328,7 +344,7 @@ void OnTick(){
    double drawdown = CalculateDrawdownPercentage();
    double sentiment = CalculateMarketSentiment();
    
-   // Attempt to execute the selected strategy
+   // Attempt to execute the selected strategy - now includes trend filter logic
    if(!ExecuteStrategy(strategy, equity, drawdown, sentiment))   {
       int error = GetLastError();
       if(error != 0)
@@ -393,6 +409,143 @@ void OnTimer(){
       lastOptionalTaskRun = currentTime;
    }
    Log("OnTimer tasks executed successfully.", LOG_INFO);
+}
+
+//+------------------------------------------------------------------+
+//| Get next higher timeframe                                         |
+//+------------------------------------------------------------------+
+int GetHigherTimeframe(int currentTimeframe){
+   switch(currentTimeframe)   {
+      case PERIOD_M1:  return PERIOD_M5;
+      case PERIOD_M5:  return PERIOD_M15;
+      case PERIOD_M15: return PERIOD_M30;
+      case PERIOD_M30: return PERIOD_H1;
+      case PERIOD_H1:  return PERIOD_H4;
+      case PERIOD_H4:  return PERIOD_D1;
+      case PERIOD_D1:  return PERIOD_W1;
+      case PERIOD_W1:  return PERIOD_MN1;
+      default:         return PERIOD_H4; // Default to H4 if unknown timeframe
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if higher timeframe trend is bullish                        |
+//+------------------------------------------------------------------+
+bool IsHigherTimeframeTrendBullish(int ma_fast_period=50, int ma_slow_period=200){
+   int higherTF = GetHigherTimeframe(Period());
+   
+   // Calculate EMAs on higher timeframe
+   double ma_fast = iMA(Symbol(), higherTF, ma_fast_period, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double ma_slow = iMA(Symbol(), higherTF, ma_slow_period, 0, MODE_EMA, PRICE_CLOSE, 0);
+   
+   // Additional confirmation using price position
+   double close_htf = iClose(Symbol(), higherTF, 0);
+   
+   // Primary trend check: Fast MA above Slow MA
+   bool maAlignment = (ma_fast > ma_slow);
+   
+   // Confirmation: Price above fast MA
+   bool priceAboveMa = (close_htf > ma_fast);
+   
+   // Return true if both conditions are met (can be adjusted based on strictness)
+   return maAlignment && priceAboveMa;
+}
+
+//+------------------------------------------------------------------+
+//| Check if higher timeframe trend is bearish                        |
+//+------------------------------------------------------------------+
+bool IsHigherTimeframeTrendBearish(int ma_fast_period=50, int ma_slow_period=200){
+   int higherTF = GetHigherTimeframe(Period());
+   
+   // Calculate EMAs on higher timeframe
+   double ma_fast = iMA(Symbol(), higherTF, ma_fast_period, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double ma_slow = iMA(Symbol(), higherTF, ma_slow_period, 0, MODE_EMA, PRICE_CLOSE, 0);
+   
+   // Additional confirmation using price position
+   double close_htf = iClose(Symbol(), higherTF, 0);
+   
+   // Primary trend check: Fast MA below Slow MA
+   bool maAlignment = (ma_fast < ma_slow);
+   
+   // Confirmation: Price below fast MA
+   bool priceBelowMa = (close_htf < ma_fast);
+   
+   // Return true if both conditions are met (can be adjusted based on strictness)
+   return maAlignment && priceBelowMa;
+}
+
+//+------------------------------------------------------------------+
+//| Get trend direction in higher timeframe (-1: Down, 0: Neutral, 1: Up) |
+//+------------------------------------------------------------------+
+int GetHigherTimeframeTrendDirection(int ma_fast_period=50, int ma_slow_period=200){
+   if(IsHigherTimeframeTrendBullish(ma_fast_period, ma_slow_period))
+      return 1;  // Bullish trend
+   
+   if(IsHigherTimeframeTrendBearish(ma_fast_period, ma_slow_period))
+      return -1; // Bearish trend
+      
+   return 0;     // Neutral trend
+}
+
+//+------------------------------------------------------------------+
+//| Get cached trend direction or recalculate if needed               |
+//+------------------------------------------------------------------+
+int GetCachedTrendDirection(){
+   int higherTF = GetHigherTimeframe(Period());
+   datetime currentBarTime = iTime(Symbol(), higherTF, 0);
+   
+   // If we have a new bar on higher timeframe or haven't calculated yet
+   if(currentBarTime != lastTrendCheck || cachedTrendDirection == -99)   {
+      cachedTrendDirection = GetHigherTimeframeTrendDirection(HTF_FastMA, HTF_SlowMA);
+      lastTrendCheck = currentBarTime;
+      
+      // Log the trend direction change
+      string trendText = "NEUTRAL";
+      if(cachedTrendDirection > 0) trendText = "BULLISH";
+      if(cachedTrendDirection < 0) trendText = "BEARISH";
+      Log("Higher Timeframe Trend updated: " + trendText, LOG_INFO);
+   }
+   
+   return cachedTrendDirection;
+}
+
+//+------------------------------------------------------------------+
+//| Display trend information on chart                                |
+//+------------------------------------------------------------------+
+void DisplayTrendInfo(){
+   if(!UseHigherTimeframeTrendFilter) return;
+   
+   int trendDirection = GetCachedTrendDirection();
+   string trendText = "HTF Trend: ";
+   color trendColor = clrWhite;
+   
+   if(trendDirection > 0)   {
+      trendText += "BULLISH";
+      trendColor = clrGreen;
+   }
+   else if(trendDirection < 0)   {
+      trendText += "BEARISH";
+      trendColor = clrRed;
+   }
+   else   {
+      trendText += "NEUTRAL";
+      trendColor = clrYellow;
+   }
+   
+   // Create or update label object
+   string labelName = "HTF_Trend_Label";
+   
+   if(ObjectFind(labelName) < 0)   {
+      // Create new label
+      ObjectCreate(labelName, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(labelName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSet(labelName, OBJPROP_XDISTANCE, 10);
+      ObjectSet(labelName, OBJPROP_YDISTANCE, 15);
+   }
+   
+   // Update label properties
+   ObjectSetText(labelName, trendText, 10, "Arial", trendColor);
+   ObjectSet(labelName, OBJPROP_BACK, false);
 }
 
 //+------------------------------------------------------------------+
@@ -1744,7 +1897,9 @@ string SomeOptimizationCheckFailed(double maxDrawdown, double currentDrawdown, d
    return "";
 }
 
-// Function to update the indicator cache only when a new candle is detected
+//+------------------------------------------------------------------+
+//| Modified UpdateIndicatorCache to include trend information        |
+//+------------------------------------------------------------------+
 void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    if (symbol == NULL || StringLen(symbol) == 0)
       symbol = Symbol();
@@ -1752,7 +1907,7 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    datetime currentCandleTime = iTime(symbol, timeframe, 0);
    if (g_IndicatorCache.lastUpdate == currentCandleTime)
       return;
-
+      
    // Compute indicators
    double atrValue = iATR(symbol, timeframe, ATRPeriod, 0);
    double rsiValue = iRSI(symbol, timeframe, RSIPeriod, PRICE_CLOSE, 0);
@@ -1765,7 +1920,13 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    double macdMain = iMACD(symbol, timeframe, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
    double macdSignal = iMACD(symbol, timeframe, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
    double bollingerWidth = upperBand - lowerBand;
-
+   
+   // Update higher timeframe trend direction if trend filter is enabled
+   int htfTrendDirection = 0; // Default neutral
+   if(UseHigherTimeframeTrendFilter) {
+      htfTrendDirection = GetCachedTrendDirection(); // This will update if needed
+   }
+   
    // Apply fallbacks if necessary (specifying min and max values)
    atrValue = (IsValidIndicatorValue(atrValue, 0.0001, 100000) == VALID ? atrValue : FALLBACK_ATR);
    rsiValue = (IsValidIndicatorValue(rsiValue, 0.0001, 100000) == VALID ? rsiValue : FALLBACK_RSI);
@@ -1775,7 +1936,7 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    adxValue = (IsValidIndicatorValue(adxValue, 0.0001, 100000) == VALID ? adxValue : FALLBACK_ADX);
    macdMain = (IsValidIndicatorValue(macdMain, 0.0001, 100000) == VALID ? macdMain : 0);
    macdSignal = (IsValidIndicatorValue(macdSignal, 0.0001, 100000) == VALID ? macdSignal : 0);
-
+   
    // Update cache
    g_IndicatorCache.atr = atrValue;
    g_IndicatorCache.rsi = rsiValue;
@@ -1788,10 +1949,15 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
    g_IndicatorCache.trendStrength = localTrendStrength;
    g_IndicatorCache.macdMain = macdMain;
    g_IndicatorCache.macdSignal = macdSignal;
+   g_IndicatorCache.htfTrendDirection = htfTrendDirection; // Store the HTF trend direction
    g_IndicatorCache.lastUpdate = currentCandleTime;
-
+   
    // Log update
    if (debugMode) {
+      string trendText = "NEUTRAL";
+      if(htfTrendDirection > 0) trendText = "BULLISH";
+      if(htfTrendDirection < 0) trendText = "BEARISH";
+      
       LogMessage(LOG_INFO, "Indicators updated: ATR=" + DoubleToString(atrValue,6) +
                            " RSI=" + DoubleToString(rsiValue,2) +
                            " FastMA=" + DoubleToString(fastMAValue,2) +
@@ -1799,7 +1965,8 @@ void UpdateIndicatorCache(string symbol = NULL, int timeframe = PERIOD_H1) {
                            " ADX=" + DoubleToString(adxValue,2) +
                            " Trend=" + DoubleToString(localTrendStrength,2) +
                            " MACD_MAIN=" + DoubleToString(macdMain,2) +
-                           " MACD_SIGNAL=" + DoubleToString(macdSignal,2));
+                           " MACD_SIGNAL=" + DoubleToString(macdSignal,2) +
+                           (UseHigherTimeframeTrendFilter ? " HTF_TREND=" + trendText : ""));
    }
 }
 
@@ -5648,6 +5815,63 @@ bool ExecuteStrategy(TradingStrategy strategy, double equity, double drawdown, d
       Log("ExecuteStrategy: Neutral market conditions (sentiment=" + DoubleToString(marketSentiment,2) +
           ", trendSignal=" + DoubleToString(trendSignal,1) + "). No trade executed.", LOG_INFO);
       return false;
+   }
+   
+   // Apply higher timeframe trend filter if enabled
+   bool longSignal = (orderType == OP_BUY);
+   bool shortSignal = (orderType == OP_SELL);
+   double calculatedLotSize = lotSize;
+   
+   if(UseHigherTimeframeTrendFilter) {
+      int trendDirection = GetCachedTrendDirection();
+      string trendText = "NEUTRAL";
+      if(trendDirection > 0) trendText = "BULLISH";
+      if(trendDirection < 0) trendText = "BEARISH";
+      
+      Log("ExecuteStrategy: Higher timeframe trend is " + trendText, LOG_DEBUG);
+      
+      // For long signals
+      if(longSignal) {
+         // Strict mode: reject counter-trend signals
+         if(StrictTrendFilter && trendDirection < 0) {
+            Log("ExecuteStrategy: Long signal rejected due to bearish higher timeframe trend.", LOG_INFO);
+            longSignal = false;
+            return false;
+         }
+         // Adjust lot size for counter-trend trades
+         else if(trendDirection < 0 && CounterTrendReducedLots) {
+            calculatedLotSize *= CounterTrendLotMultiplier;
+            Log("ExecuteStrategy: Reduced lot size for counter-trend long trade. Original: " + 
+                DoubleToString(calculatedLotSize/CounterTrendLotMultiplier, 2) + 
+                " Modified: " + DoubleToString(calculatedLotSize, 2), LOG_INFO);
+         }
+      }
+      
+      // For short signals
+      if(shortSignal) {
+         // Strict mode: reject counter-trend signals
+         if(StrictTrendFilter && trendDirection > 0) {
+            Log("ExecuteStrategy: Short signal rejected due to bullish higher timeframe trend.", LOG_INFO);
+            shortSignal = false;
+            return false;
+         }
+         // Adjust lot size for counter-trend trades
+         else if(trendDirection > 0 && CounterTrendReducedLots) {
+            calculatedLotSize *= CounterTrendLotMultiplier;
+            Log("ExecuteStrategy: Reduced lot size for counter-trend short trade. Original: " + 
+                DoubleToString(calculatedLotSize/CounterTrendLotMultiplier, 2) + 
+                " Modified: " + DoubleToString(calculatedLotSize, 2), LOG_INFO);
+         }
+      }
+      
+      // Update order type based on filtered signals
+      if(!longSignal && !shortSignal) {
+         Log("ExecuteStrategy: All signals rejected by higher timeframe trend filter.", LOG_INFO);
+         return false;
+      }
+      
+      // Update lot size with potentially reduced value
+      lotSize = calculatedLotSize;
    }
    
    // Determine the appropriate pip value. For USDJPY, if MODE_DIGITS is 3 or 5, then one pip = 0.01.
