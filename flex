@@ -319,6 +319,9 @@ void OnTick() {
     // Update indicators and market state from the modular indicator manager
     UpdateIndicatorCache(Symbol(), Timeframe);
 
+    // Update risk level dynamically
+    UpdateRiskLevel();
+
     // Display trend information
     if (UseHigherTimeframeTrendFilter) {
         DisplayTrendInfo();
@@ -364,6 +367,10 @@ void OnTimer() {
     if (currentTime - lastCheck < performanceCheckInterval)
         return;
     lastCheck = currentTime;
+
+    // Update risk level dynamically
+    UpdateRiskLevel();
+
     if (CheckRecoveryMode() || CalculateConsolidatedRisk(AccountEquity(), 2.0, RiskMedium, CalculateDrawdownPercentage())) {
         Log("Risk limits exceeded or recovery mode active. Trading disabled.", LOG_WARNING);
         return;
@@ -971,6 +978,36 @@ int GetDynamicExecutionInterval(double threshold = 0.5, int highInterval = 120, 
         return lowInterval;
     }
     return (vol > threshold) ? highInterval : lowInterval;
+}
+
+RiskLevelType CalculateRiskLevel() {
+    double volatility = GetMarketVolatility();
+    double equity = AccountEquity();
+    double drawdown = CalculateDrawdownPercentage();
+
+    // Define thresholds for volatility and equity changes
+    double highVolatilityThreshold = 1.5; // Example threshold
+    double lowVolatilityThreshold = 0.5;  // Example threshold
+    double highDrawdownThreshold = 10;    // Example percentage
+    double mediumDrawdownThreshold = 5;   // Example percentage
+
+    RiskLevelType newRiskLevel;
+
+    if (volatility > highVolatilityThreshold || drawdown > highDrawdownThreshold) {
+        newRiskLevel = RiskLow;
+    } else if (volatility > lowVolatilityThreshold || drawdown > mediumDrawdownThreshold) {
+        newRiskLevel = RiskMedium;
+    } else {
+        newRiskLevel = RiskHigh;
+    }
+
+    return newRiskLevel;
+}
+
+void UpdateRiskLevel() {
+    RiskLevelType newRiskLevel = CalculateRiskLevel();
+    SetRiskLevel(newRiskLevel);
+    Log("Risk level updated to " + RiskLevelToString(newRiskLevel) + " based on market conditions and account equity.", LOG_INFO);
 }
 
 //+------------------------------------------------------------------+
