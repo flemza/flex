@@ -1963,11 +1963,15 @@ double GetPerformanceMetric(double riskFreeRate = 0.01, datetime startTime = 0, 
       if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) {
          datetime closeTime = OrderCloseTime();
          if ((startTime == 0 || closeTime >= startTime) && (endTime == 0 || closeTime <= endTime)) {
-            double tradeReturn = (OrderProfit() + OrderSwap() + OrderCommission()) / (AccountBalance() - OrderProfit());
-            if (tradeReturn != 0) {
-               sumReturns += tradeReturn;
-               sumSquared += tradeReturn * tradeReturn;
-               count++;
+            double orderProfit = OrderProfit();
+            double accountBalance = AccountBalance();
+            if ((accountBalance - orderProfit) != 0) {
+               double tradeReturn = (orderProfit + OrderSwap() + OrderCommission()) / (accountBalance - orderProfit);
+               if (tradeReturn != 0) {
+                  sumReturns += tradeReturn;
+                  sumSquared += tradeReturn * tradeReturn;
+                  count++;
+               }
             }
          }
       }
